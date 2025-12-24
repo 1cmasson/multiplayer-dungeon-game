@@ -2,23 +2,373 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Multiplayer Dungeon Shooter - Game</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  
+  <!-- PWA Meta Tags -->
+  <meta name="theme-color" content="#00ff00">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Dungeon">
+  <meta name="application-name" content="Dungeon Shooter">
+  <meta name="msapplication-TileColor" content="#1a1a1a">
+  <meta name="msapplication-tap-highlight" content="no">
+  
+  <!-- Manifest & Icons -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16.png">
+  <link rel="apple-touch-icon" href="/icons/icon-180.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-167.png">
+  
+  <!-- Splash Screens for iOS -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  
+  <title>Dungeon Shooter</title>
   <style>
-    body {
+    /* CSS Reset & Base */
+    *, *::before, *::after {
+      box-sizing: border-box;
       margin: 0;
-      padding: 20px;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      touch-action: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
       font-family: 'Courier New', monospace;
       background: #1a1a1a;
       color: #00ff00;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+
+    /* Safe area padding for notched devices */
+    @supports (padding: env(safe-area-inset-top)) {
+      body {
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+      }
+    }
+
+    /* ==========================================
+       GAME CONTAINER - Full Screen
+    ========================================== */
+    #gameContainer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
       display: flex;
+      flex-direction: column;
+      background: #1a1a1a;
+    }
+
+    /* Canvas fills available space */
+    #canvas {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      touch-action: none;
+    }
+
+    /* ==========================================
+       HUD - Minimal Mobile Overlay
+    ========================================== */
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 8px 12px;
+      padding-top: max(8px, env(safe-area-inset-top));
+      background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    .hud-left, .hud-right {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .hud-item {
+      font-size: 12px;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      white-space: nowrap;
+    }
+
+    .hud-lives {
+      color: #ff4444;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    .hud-level {
+      color: #ffff00;
+    }
+
+    /* Menu Button (top-right) */
+    #menuBtn {
+      position: absolute;
+      top: 8px;
+      top: max(8px, env(safe-area-inset-top));
+      right: 8px;
+      right: max(8px, env(safe-area-inset-right));
+      width: 44px;
+      height: 44px;
+      background: rgba(0, 255, 0, 0.2);
+      border: 2px solid #00ff00;
+      border-radius: 8px;
+      color: #00ff00;
+      font-size: 20px;
+      cursor: pointer;
+      pointer-events: auto;
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #menuBtn:active {
+      background: rgba(0, 255, 0, 0.4);
+    }
+
+    /* ==========================================
+       TOUCH CONTROLS OVERLAY
+    ========================================== */
+    #touchControls {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      z-index: 50;
+      display: none; /* Hidden by default, shown on touch devices */
+    }
+
+    #touchControls.active {
+      display: block;
+    }
+
+    /* Touch zones - invisible but define interaction areas */
+    .touch-zone {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      pointer-events: auto;
+    }
+
+    #moveZone {
+      left: 0;
+      width: 50%;
+    }
+
+    #shootZone {
+      right: 0;
+      width: 50%;
+    }
+
+    /* Visual joystick feedback (appears on touch) */
+    .joystick-visual {
+      position: absolute;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .joystick-visual.active {
+      opacity: 1;
+    }
+
+    .joystick-base {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: rgba(0, 255, 0, 0.15);
+      border: 2px solid rgba(0, 255, 0, 0.3);
+      position: absolute;
+      transform: translate(-50%, -50%);
+    }
+
+    .joystick-knob {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: rgba(0, 255, 0, 0.4);
+      border: 2px solid rgba(0, 255, 0, 0.6);
+      position: absolute;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Shoot indicator */
+    #shootIndicator {
+      position: absolute;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: 3px solid rgba(255, 255, 0, 0.6);
+      background: rgba(255, 255, 0, 0.2);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.1s ease;
+    }
+
+    #shootIndicator.active {
+      opacity: 1;
+      animation: shootPulse 0.15s ease-out;
+    }
+
+    @keyframes shootPulse {
+      0% { transform: translate(-50%, -50%) scale(1); }
+      50% { transform: translate(-50%, -50%) scale(1.3); }
+      100% { transform: translate(-50%, -50%) scale(1); }
+    }
+
+    /* ==========================================
+       DESKTOP CONTROLS INFO (hidden on mobile)
+    ========================================== */
+    #desktopControls {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 12px;
+      color: rgba(0, 255, 0, 0.6);
+      text-align: center;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    @media (max-width: 768px), (pointer: coarse) {
+      #desktopControls {
+        display: none;
+      }
+    }
+
+    /* ==========================================
+       MOBILE TOUCH HINT (shown briefly)
+    ========================================== */
+    #touchHint {
+      position: absolute;
+      bottom: 20%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.8);
+      border: 2px solid #00ff00;
+      border-radius: 10px;
+      padding: 15px 25px;
+      text-align: center;
+      z-index: 300;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    #touchHint.visible {
+      opacity: 1;
+    }
+
+    #touchHint h3 {
+      color: #00ff00;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    #touchHint p {
+      color: #aaa;
+      font-size: 12px;
+      margin: 5px 0;
+    }
+
+    /* ==========================================
+       LANDSCAPE SUGGESTION (portrait only)
+    ========================================== */
+    #orientationHint {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.95);
+      z-index: 9999;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      min-height: 100vh;
+      text-align: center;
+      padding: 20px;
     }
 
-    /* Game Over Modal */
+    #orientationHint .rotate-icon {
+      font-size: 60px;
+      margin-bottom: 20px;
+      animation: rotateHint 2s ease-in-out infinite;
+    }
+
+    @keyframes rotateHint {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(90deg); }
+    }
+
+    #orientationHint h2 {
+      color: #00ff00;
+      margin-bottom: 10px;
+    }
+
+    #orientationHint p {
+      color: #888;
+      font-size: 14px;
+    }
+
+    #orientationHint button {
+      margin-top: 20px;
+      padding: 12px 24px;
+      background: transparent;
+      border: 2px solid #00ff00;
+      color: #00ff00;
+      font-family: inherit;
+      font-size: 14px;
+      cursor: pointer;
+      border-radius: 5px;
+    }
+
+    /* Show orientation hint in portrait on small screens */
+    @media (max-width: 600px) and (orientation: portrait) {
+      #orientationHint.suggest {
+        display: flex;
+      }
+    }
+
+    /* ==========================================
+       GAME OVER MODAL
+    ========================================== */
     #gameOverModal {
       position: fixed;
       top: 0;
@@ -30,24 +380,63 @@
       align-items: center;
       justify-content: center;
       z-index: 1000;
+      padding: 20px;
     }
 
     #gameOverModal.hidden {
       display: none;
     }
 
-    /* Waiting Room Overlay */
+    .modal-content {
+      background: #1a1a1a;
+      border: 3px solid #00ff00;
+      padding: 30px;
+      border-radius: 10px;
+      box-shadow: 0 0 30px rgba(0, 255, 0, 0.5);
+      text-align: center;
+      max-width: 350px;
+      width: 100%;
+    }
+
+    .modal-title {
+      font-size: 28px;
+      margin-bottom: 20px;
+      text-shadow: 0 0 10px #00ff00;
+    }
+
+    .modal-content p {
+      margin: 15px 0;
+    }
+
+    .modal-content button {
+      width: 100%;
+      padding: 15px;
+      margin-top: 15px;
+      background: #00ff00;
+      color: #1a1a1a;
+      border: none;
+      font-family: inherit;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      border-radius: 5px;
+    }
+
+    /* ==========================================
+       WAITING ROOM OVERLAY
+    ========================================== */
     #waitingRoomOverlay {
       position: fixed;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(0, 0, 0, 0.75);
+      background: rgba(0, 0, 0, 0.85);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 900;
+      padding: 20px;
     }
 
     #waitingRoomOverlay.hidden {
@@ -57,84 +446,73 @@
     .waiting-room-content {
       background: rgba(26, 26, 26, 0.95);
       border: 3px solid #00ff00;
-      padding: 40px;
+      padding: 30px;
       border-radius: 10px;
       box-shadow: 0 0 30px rgba(0, 255, 0, 0.5);
       text-align: center;
-      max-width: 450px;
-      width: 90%;
+      max-width: 400px;
+      width: 100%;
+      max-height: 80vh;
+      overflow-y: auto;
     }
 
     .waiting-title {
-      font-size: 28px;
-      margin-bottom: 10px;
+      font-size: 24px;
+      margin-bottom: 8px;
       text-shadow: 0 0 10px #00ff00;
       color: #00ff00;
     }
 
     .waiting-room-name {
-      font-size: 16px;
+      font-size: 14px;
       color: #ffff00;
-      margin-bottom: 25px;
+      margin-bottom: 20px;
     }
 
     .waiting-players {
-      margin: 20px 0;
+      margin: 15px 0;
       text-align: left;
-      padding: 15px;
+      padding: 12px;
       background: rgba(0, 255, 0, 0.05);
       border: 1px solid #00ff00;
       border-radius: 5px;
     }
 
     .waiting-players h3 {
-      margin: 0 0 15px 0;
-      font-size: 14px;
+      margin: 0 0 12px 0;
+      font-size: 13px;
       color: #00ff00;
     }
 
     .waiting-player-item {
-      padding: 8px 10px;
-      margin: 5px 0;
+      padding: 8px;
+      margin: 4px 0;
       background: rgba(0, 255, 0, 0.1);
       border-radius: 3px;
-      font-size: 14px;
+      font-size: 13px;
     }
 
-    .waiting-player-host {
-      color: #ffff00;
-    }
-
-    .waiting-player-you {
-      color: #00ffff;
-    }
+    .waiting-player-host { color: #ffff00; }
+    .waiting-player-you { color: #00ffff; }
 
     #startGameBtn {
       width: 100%;
-      padding: 15px 30px;
+      padding: 15px;
       font-size: 18px;
       background: #00ff00;
       color: #1a1a1a;
       border: none;
       border-radius: 5px;
       cursor: pointer;
-      font-family: 'Courier New', monospace;
+      font-family: inherit;
       font-weight: bold;
-      margin: 15px 0;
-      box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
-      transition: all 0.2s;
-    }
-
-    #startGameBtn:hover {
-      background: #00cc00;
-      transform: translateY(-2px);
-      box-shadow: 0 0 30px rgba(0, 255, 0, 0.7);
+      margin: 12px 0;
     }
 
     #waitingMessage {
       color: #888;
-      font-size: 14px;
-      margin: 15px 0;
+      font-size: 13px;
+      margin: 12px 0;
       font-style: italic;
     }
 
@@ -143,286 +521,253 @@
       border: 2px solid #ff6600;
       color: #ff6600;
       padding: 10px 20px;
-      font-family: 'Courier New', monospace;
+      font-family: inherit;
       font-size: 12px;
       cursor: pointer;
       border-radius: 5px;
-      margin-top: 10px;
+      margin-top: 8px;
     }
 
-    .leave-waiting-btn:hover {
-      background: #ff6600;
-      color: #1a1a1a;
-    }
-
-    .modal-content {
-      background: #1a1a1a;
-      border: 3px solid #00ff00;
-      padding: 40px;
-      border-radius: 10px;
-      box-shadow: 0 0 30px rgba(0, 255, 0, 0.5);
-      text-align: center;
-      max-width: 400px;
-      width: 90%;
-    }
-
-    .modal-title {
-      font-size: 32px;
-      margin-bottom: 30px;
-      text-shadow: 0 0 10px #00ff00;
-    }
-
-    h1 {
-      margin: 0 0 20px 0;
-      font-size: 24px;
-      text-shadow: 0 0 10px #00ff00;
-    }
-
-    #gameInfo {
-      margin-bottom: 10px;
-      font-size: 14px;
-    }
-
-    #canvas {
-      border: 2px solid #00ff00;
-      box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
-      image-rendering: pixelated;
-      image-rendering: crisp-edges;
-    }
-
-    #controls {
-      margin-top: 20px;
-      text-align: center;
-    }
-
-    button {
-      background: #00ff00;
-      color: #1a1a1a;
-      border: none;
-      padding: 10px 20px;
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      font-weight: bold;
-      cursor: pointer;
-      margin: 5px;
-      box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
-    }
-
-    button:hover {
-      background: #00cc00;
-    }
-
-    button:active {
-      transform: translateY(2px);
-    }
-
-    #status {
-      margin-top: 10px;
-      font-size: 16px;
-      font-weight: bold;
-    }
-
-    .legend {
-      margin-top: 15px;
-      font-size: 12px;
-      text-align: left;
-    }
-
-    .legend-item {
-      display: inline-block;
-      margin-right: 20px;
-    }
-
-    .legend-color {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      margin-right: 5px;
-      vertical-align: middle;
-    }
-
-    /* Debug Toggle Button */
-    .debug-toggle {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 999;
-      padding: 10px 15px;
-      background: #00ff00;
-      border: 2px solid #00cc00;
-      color: #1a1a1a;
-      cursor: pointer;
-      font-family: 'Courier New', monospace;
-      font-weight: bold;
-      font-size: 14px;
-      box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
-      transition: background 0.2s;
-    }
-
-    .debug-toggle:hover {
-      background: #00cc00;
-    }
-
-    /* Debug Panel */
-    .debug-panel {
+    /* ==========================================
+       SIDE PANEL (Debug/Info)
+    ========================================== */
+    #debugPanel {
       position: fixed;
       top: 0;
       right: 0;
-      width: 320px;
-      height: 100vh;
+      width: 280px;
+      max-width: 85vw;
+      height: 100%;
       background: rgba(10, 10, 10, 0.98);
       border-left: 3px solid #00ff00;
-      padding: 20px;
-      z-index: 998;
+      padding: 15px;
+      padding-top: max(15px, env(safe-area-inset-top));
+      z-index: 500;
       overflow-y: auto;
+      transform: translateX(100%);
       transition: transform 0.3s ease-in-out;
-      box-shadow: -5px 0 20px rgba(0, 255, 0, 0.3);
-      color: #00ff00;
-      font-family: 'Courier New', monospace;
     }
 
-    .debug-panel.hidden {
-      transform: translateX(100%);
+    #debugPanel.visible {
+      transform: translateX(0);
     }
 
     .debug-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 20px;
-      border-bottom: 2px solid #00ff00;
+      margin-bottom: 15px;
       padding-bottom: 10px;
+      border-bottom: 2px solid #00ff00;
     }
 
     .debug-header h3 {
       margin: 0;
-      font-size: 16px;
+      font-size: 14px;
       color: #00ff00;
-      text-shadow: 0 0 5px #00ff00;
     }
 
     .debug-close-btn {
       background: transparent;
       border: 2px solid #00ff00;
       color: #00ff00;
-      width: 30px;
-      height: 30px;
+      width: 36px;
+      height: 36px;
       padding: 0;
-      margin: 0;
       cursor: pointer;
       font-size: 16px;
-      font-weight: bold;
-      box-shadow: none;
-    }
-
-    .debug-close-btn:hover {
-      background: #00ff00;
-      color: #1a1a1a;
+      border-radius: 5px;
     }
 
     .debug-section {
-      margin-bottom: 20px;
-      padding: 15px;
+      margin-bottom: 15px;
+      padding: 12px;
       background: rgba(0, 255, 0, 0.05);
       border: 1px solid #00ff00;
       border-radius: 5px;
     }
 
     .debug-section h4 {
-      margin: 0 0 12px 0;
+      margin: 0 0 10px 0;
       color: #00ff00;
-      font-size: 14px;
+      font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 1px;
     }
 
     .debug-checkbox {
       display: block;
-      margin: 10px 0;
-      cursor: pointer;
-      font-size: 13px;
-      user-select: none;
-    }
-
-    .debug-checkbox input[type="checkbox"] {
-      margin-right: 10px;
-      cursor: pointer;
-    }
-
-    .bot-stats-list {
-      font-size: 12px;
-      line-height: 1.8;
-    }
-
-    .bot-stat-placeholder {
-      color: #006600;
-      font-style: italic;
-    }
-
-    .bot-stat-item {
       margin: 8px 0;
-      padding: 5px;
-      background: rgba(0, 255, 0, 0.1);
-      border-radius: 3px;
+      cursor: pointer;
+      font-size: 12px;
     }
 
-    /* Adjust body to accommodate debug panel when open */
-    body.debug-open {
-      margin-right: 320px;
+    .debug-checkbox input {
+      margin-right: 8px;
     }
 
-    /* Player list styles */
     .player-card {
       background: rgba(0, 255, 0, 0.05);
       border: 1px solid #00ff00;
       border-radius: 3px;
-      padding: 10px;
-      margin-bottom: 10px;
+      padding: 8px;
+      margin-bottom: 8px;
+      font-size: 11px;
     }
 
     .player-card-header {
       font-weight: bold;
-      font-size: 13px;
-      margin-bottom: 5px;
+      margin-bottom: 4px;
     }
 
     .player-card-stats {
-      font-size: 11px;
-      color: #aaa;
-      line-height: 1.6;
+      color: #888;
+      line-height: 1.5;
     }
 
-    /* Activity feed styles */
+    .bot-stats-list {
+      font-size: 11px;
+    }
+
+    .bot-stat-item {
+      margin: 6px 0;
+      padding: 4px;
+      background: rgba(0, 255, 0, 0.1);
+      border-radius: 3px;
+    }
+
     .activity-message {
-      padding: 4px 0;
+      padding: 3px 0;
       border-bottom: 1px solid rgba(0, 255, 0, 0.1);
+      font-size: 10px;
     }
 
     .activity-time {
       color: #666;
-      font-size: 10px;
-      margin-right: 5px;
+      margin-right: 4px;
     }
 
     .activity-join { color: #00ff00; }
     .activity-leave { color: #ff6600; }
     .activity-kill { color: #ffff00; }
     .activity-death { color: #ff0000; }
-    .activity-level { color: #00ffff; }
-    .activity-spawn { color: #999; }
+
+    /* Panel buttons */
+    .debug-section button {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      font-size: 12px;
+    }
+
+    #leaveRoomBtn {
+      background: #ff0000;
+    }
+
+    /* Status bar at bottom */
+    #statusBar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 6px 12px;
+      padding-bottom: max(6px, env(safe-area-inset-bottom));
+      background: linear-gradient(to top, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
+      font-size: 11px;
+      color: rgba(0, 255, 0, 0.8);
+      text-align: center;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    /* Hide on very small screens in landscape */
+    @media (max-height: 400px) {
+      #statusBar {
+        display: none;
+      }
+      #hud {
+        padding: 4px 8px;
+      }
+      .hud-item {
+        font-size: 10px;
+      }
+    }
+
+    /* Utility classes */
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
+  <!-- Orientation Hint (portrait mobile) -->
+  <div id="orientationHint">
+    <div class="rotate-icon">📱</div>
+    <h2>Rotate for Best Experience</h2>
+    <p>This game plays best in landscape mode</p>
+    <button onclick="dismissOrientationHint()">Play Anyway</button>
+  </div>
+
+  <!-- Game Container -->
+  <div id="gameContainer">
+    <canvas id="canvas"></canvas>
+
+    <!-- HUD Overlay -->
+    <div id="hud">
+      <div class="hud-left">
+        <div class="hud-item hud-lives">&#9829; <span id="playerLives">3</span></div>
+        <div class="hud-item hud-level">L<span id="currentLevel">1</span>/<span id="totalLevels">5</span></div>
+        <div class="hud-item">K: <span id="levelKills">0</span>/<span id="killsNeeded">10</span></div>
+      </div>
+      <div class="hud-right">
+        <div class="hud-item"><span id="playerCount">0</span> players</div>
+        <div class="hud-item" style="font-size: 10px; color: #888;">Room: <span id="roomId">-</span></div>
+      </div>
+    </div>
+
+    <!-- Menu Button -->
+    <button id="menuBtn" onclick="toggleDebugPanel()">&#9776;</button>
+
+    <!-- Touch Controls Overlay -->
+    <div id="touchControls">
+      <div id="moveZone" class="touch-zone"></div>
+      <div id="shootZone" class="touch-zone"></div>
+      
+      <!-- Visual feedback for joystick -->
+      <div id="joystickVisual" class="joystick-visual">
+        <div class="joystick-base"></div>
+        <div class="joystick-knob"></div>
+      </div>
+      
+      <!-- Visual feedback for shooting -->
+      <div id="shootIndicator"></div>
+    </div>
+
+    <!-- Touch Hint (shown once) -->
+    <div id="touchHint">
+      <h3>Touch Controls</h3>
+      <p>Left side: Drag to move</p>
+      <p>Right side: Tap to shoot</p>
+    </div>
+
+    <!-- Desktop Controls Info -->
+    <div id="desktopControls">
+      WASD/Arrows: Move | Mouse: Aim | Space: Shoot
+    </div>
+
+    <!-- Status Bar -->
+    <div id="statusBar">
+      <span id="status">Connecting...</span>
+    </div>
+  </div>
+
   <!-- Game Over Modal -->
   <div id="gameOverModal" class="hidden">
     <div class="modal-content">
       <div class="modal-title">GAME OVER</div>
-      <p style="margin: 20px 0; font-size: 18px;">You ran out of lives!</p>
-      <p style="margin: 20px 0; font-size: 14px;">
+      <p>You ran out of lives!</p>
+      <p>
         Level: <span id="finalLevel">1</span> |
         Kills: <span id="finalKills">0</span>
       </p>
-      <button onclick="returnToLobby()" style="width: 100%;">Return to Lobby</button>
+      <button onclick="returnToLobby()">Return to Lobby</button>
     </div>
   </div>
 
@@ -439,13 +784,11 @@
         </div>
       </div>
       
-      <!-- Only visible to host -->
       <div id="hostControls" class="hidden">
         <button id="startGameBtn" onclick="startGame()">START GAME</button>
         <div style="font-size: 11px; color: #888; margin-top: 5px;">You are the host</div>
       </div>
       
-      <!-- Only visible to non-host -->
       <div id="waitingMessage" class="hidden">
         Waiting for host to start the game...
       </div>
@@ -454,122 +797,44 @@
     </div>
   </div>
 
-  <!-- Panel Toggle Button (top-right corner) -->
-  <button id="debugToggle" onclick="toggleDebugPanel()" class="debug-toggle">
-    🎮 Panel
-  </button>
-
-  <h1>MULTIPLAYER DUNGEON SHOOTER</h1>
-
-  <div id="gameInfo">
-    <div>
-      Level: <span id="currentLevel">1</span>/<span id="totalLevels">5</span> |
-      Kills: <span id="levelKills">0</span>/<span id="killsNeeded">10</span> |
-      Lives: <span id="playerLives">3</span> |
-      Players: <span id="playerCount">0</span> |
-      Room: <span id="roomId">-</span>
-    </div>
-  </div>
-
-  <canvas id="canvas"></canvas>
-
-  <div id="controls">
-    <div>WASD/Arrows: Move | Mouse: Aim | Space: Shoot</div>
-    <div id="status">Connecting...</div>
-  </div>
-
-  <div class="legend">
-    <div class="legend-item">
-      <span class="legend-color" style="background: #333;"></span> Wall
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #666;"></span> Floor
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #1a1a1a;"></span> Obstacle
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #4d94ff;"></span> Used Portal
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #0f380f;"></span> You (Triangle)
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #8bac0f;"></span> Other Players
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #ff0000;"></span> Bots (Enemy)
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #ffff00;"></span> Bullets
-    </div>
-  </div>
-
-  <!-- Panel (slide-in from right) -->
-  <div id="debugPanel" class="debug-panel hidden">
+  <!-- Side Panel -->
+  <div id="debugPanel">
     <div class="debug-header">
-      <h3>🎮 PANEL</h3>
-      <button onclick="toggleDebugPanel()" class="debug-close-btn">✕</button>
+      <h3>MENU</h3>
+      <button onclick="toggleDebugPanel()" class="debug-close-btn">&#10005;</button>
     </div>
     
-    <!-- Room Information Section -->
     <div class="debug-section">
-      <h4>Room Information</h4>
-      <div style="margin-bottom: 10px;">
-        <div style="margin-bottom: 8px;">
-          <strong>Room Name:</strong> 
-          <span id="panelRoomName" style="color: #ffff00; font-weight: bold;">-</span>
-        </div>
-        <div style="margin-bottom: 8px;">
-          <strong>Room ID:</strong> 
-          <span id="panelRoomId" style="color: #00ffff; font-weight: bold;">-</span>
-        </div>
-        <div style="margin-bottom: 8px;">
-          <strong>Players:</strong> 
-          <span id="panelPlayerCount">0</span>/4
-        </div>
-        <div style="margin-bottom: 8px;">
-          <strong>Host:</strong> 
-          <span id="panelRoomHost" style="color: #ffff00;">-</span>
-        </div>
-        <button 
-          id="copyRoomLinkBtn" 
-          onclick="copyRoomLink()" 
-          style="width: 100%; margin-top: 5px;"
-          disabled>
-          📋 Copy Room Link
-        </button>
-        <button 
-          id="leaveRoomBtn" 
-          onclick="leaveRoom()" 
-          style="width: 100%; margin-top: 5px; background: #ff0000;"
-          disabled>
-          🚪 Leave Room
-        </button>
-        <div id="copyLinkStatus" style="margin-top: 5px; font-size: 11px; color: #00ff00; display: none;">
-          ✓ Link copied to clipboard!
-        </div>
+      <h4>Room Info</h4>
+      <div style="font-size: 11px; line-height: 1.8;">
+        <div><strong>Name:</strong> <span id="panelRoomName" style="color: #ffff00;">-</span></div>
+        <div><strong>ID:</strong> <span id="panelRoomId" style="color: #00ffff;">-</span></div>
+        <div><strong>Players:</strong> <span id="panelPlayerCount">0</span>/4</div>
+        <div><strong>Host:</strong> <span id="panelRoomHost" style="color: #ffff00;">-</span></div>
+      </div>
+      <button id="copyRoomLinkBtn" onclick="copyRoomLink()" disabled>Copy Room Link</button>
+      <button id="leaveRoomBtn" onclick="leaveRoom()" disabled>Leave Room</button>
+      <div id="copyLinkStatus" style="margin-top: 5px; font-size: 10px; color: #00ff00; display: none;">
+        Link copied!
       </div>
     </div>
 
-    <!-- Players List Section -->
     <div class="debug-section">
       <h4>Players (<span id="panelPlayersCount">0</span>/4)</h4>
-      <div id="playersList" style="font-size: 12px;">
+      <div id="playersList" style="font-size: 11px;">
         <div style="color: #666; font-style: italic;">No players yet</div>
       </div>
     </div>
 
-    <!-- Activity Feed Section -->
     <div class="debug-section">
-      <h4>Activity Feed</h4>
-      <div id="activityFeed" style="font-size: 11px; max-height: 200px; overflow-y: auto; line-height: 1.6;">
+      <h4>Activity</h4>
+      <div id="activityFeed" style="font-size: 10px; max-height: 150px; overflow-y: auto;">
         <div style="color: #666; font-style: italic;">No activity yet</div>
       </div>
     </div>
     
     <div class="debug-section">
-      <h4>Visualization</h4>
+      <h4>Debug</h4>
       <label class="debug-checkbox">
         <input type="checkbox" id="showBotPaths"> Show Bot Paths
       </label>
@@ -579,14 +844,50 @@
     </div>
     
     <div class="debug-section">
-      <h4>Bot Information</h4>
+      <h4>Bots</h4>
       <div id="botStatsContainer" class="bot-stats-list">
-        <div class="bot-stat-placeholder">No bots spawned yet</div>
+        <div style="color: #666; font-style: italic;">No bots spawned</div>
       </div>
     </div>
   </div>
 
   <script src="https://unpkg.com/colyseus.js@^0.16.0/dist/colyseus.js"></script>
   <script src="game.js"></script>
+  <script>
+    // Register Service Worker for PWA
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then((registration) => {
+            console.log('SW registered:', registration.scope);
+          })
+          .catch((error) => {
+            console.log('SW registration failed:', error);
+          });
+      });
+    }
+
+    // Orientation hint handling
+    let orientationDismissed = localStorage.getItem('orientationDismissed') === 'true';
+    
+    function checkOrientation() {
+      const hint = document.getElementById('orientationHint');
+      if (!orientationDismissed && window.innerWidth < 600 && window.innerHeight > window.innerWidth) {
+        hint.classList.add('suggest');
+      } else {
+        hint.classList.remove('suggest');
+      }
+    }
+
+    function dismissOrientationHint() {
+      orientationDismissed = true;
+      localStorage.setItem('orientationDismissed', 'true');
+      document.getElementById('orientationHint').classList.remove('suggest');
+    }
+
+    window.addEventListener('resize', checkOrientation);
+    window.addEventListener('orientationchange', checkOrientation);
+    checkOrientation();
+  </script>
 </body>
 </html>

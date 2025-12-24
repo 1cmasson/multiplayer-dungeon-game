@@ -2,199 +2,148 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Multiplayer Dungeon Shooter - Lobby</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  
+  <!-- PWA Meta Tags -->
+  <meta name="theme-color" content="#00ff00">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Dungeon">
+  <meta name="application-name" content="Dungeon Shooter">
+  <meta name="msapplication-TileColor" content="#1a1a1a">
+  <meta name="msapplication-tap-highlight" content="no">
+  
+  <!-- Manifest & Icons -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+  <link rel="apple-touch-icon" href="/icons/icon-180.png">
+  
+  <title>Dungeon Shooter</title>
   <style>
-    body {
+    /* CSS Reset */
+    *, *::before, *::after {
+      box-sizing: border-box;
       margin: 0;
-      padding: 20px;
+      padding: 0;
+    }
+
+    html {
+      height: 100%;
+    }
+
+    body {
+      min-height: 100%;
       font-family: 'Courier New', monospace;
       background: #1a1a1a;
       color: #00ff00;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      min-height: 100vh;
+      padding: 20px;
+      padding-top: max(20px, env(safe-area-inset-top));
+      padding-bottom: max(20px, env(safe-area-inset-bottom));
+      -webkit-tap-highlight-color: transparent;
     }
 
+    /* Lobby Container */
     .lobby-container {
-      max-width: 800px;
+      max-width: 500px;
       width: 100%;
-      padding: 40px;
+      padding: 0;
     }
 
+    /* Title Section */
     .lobby-title {
-      font-size: 48px;
+      font-size: clamp(28px, 8vw, 48px);
       text-align: center;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
       text-shadow: 0 0 20px #00ff00;
       letter-spacing: 2px;
+      line-height: 1.1;
     }
 
     .lobby-subtitle {
       text-align: center;
       color: #00cc00;
-      margin-bottom: 40px;
-      font-size: 14px;
+      margin-bottom: 30px;
+      font-size: clamp(12px, 3vw, 14px);
     }
 
-    .create-room-section {
+    /* Sections */
+    .create-room-section,
+    .browse-rooms-section {
       background: rgba(0, 255, 0, 0.05);
-      border: 3px solid #00ff00;
+      border: 2px solid #00ff00;
       border-radius: 10px;
-      padding: 30px;
-      margin-bottom: 30px;
-      box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 0 20px rgba(0, 255, 0, 0.2);
     }
 
     .section-title {
-      font-size: 24px;
-      margin-bottom: 20px;
+      font-size: clamp(18px, 5vw, 24px);
+      margin-bottom: 15px;
       color: #ffff00;
       text-shadow: 0 0 10px #ffff00;
     }
 
+    /* Input Groups */
     .input-group {
-      margin: 20px 0;
+      margin: 15px 0;
     }
 
     .input-group label {
       display: block;
-      margin-bottom: 10px;
-      font-size: 14px;
+      margin-bottom: 8px;
+      font-size: 13px;
       color: #00ff00;
     }
 
     .input-group input {
       width: 100%;
-      padding: 12px;
+      padding: 14px 12px;
       font-family: 'Courier New', monospace;
-      font-size: 16px;
+      font-size: 16px; /* Prevents iOS zoom */
       background: #0a0a0a;
       border: 2px solid #00ff00;
       color: #00ff00;
-      border-radius: 5px;
-      box-sizing: border-box;
+      border-radius: 8px;
+      -webkit-appearance: none;
+      appearance: none;
     }
 
     .input-group input:focus {
       outline: none;
-      box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+      box-shadow: 0 0 15px rgba(0, 255, 0, 0.5);
     }
 
-    .browse-rooms-section {
-      background: rgba(0, 255, 0, 0.05);
-      border: 3px solid #00ff00;
-      border-radius: 10px;
-      padding: 30px;
-      box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+    .input-group input::placeholder {
+      color: #006600;
     }
 
-    .rooms-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-
-    .refresh-btn {
-      background: transparent;
-      border: 2px solid #00ff00;
-      color: #00ff00;
-      padding: 8px 16px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      cursor: pointer;
-      border-radius: 5px;
-    }
-
-    .refresh-btn:hover {
-      background: #00ff00;
-      color: #1a1a1a;
-    }
-
-    .rooms-list {
-      max-height: 400px;
-      overflow-y: auto;
-      margin-top: 20px;
-    }
-
-    .room-item {
-      background: rgba(0, 255, 0, 0.05);
-      border: 2px solid #00ff00;
-      border-radius: 5px;
-      padding: 20px;
-      margin-bottom: 15px;
-      transition: all 0.2s;
-    }
-
-    .room-item:hover {
-      background: rgba(0, 255, 0, 0.1);
-      box-shadow: 0 0 15px rgba(0, 255, 0, 0.3);
-      transform: translateY(-2px);
-    }
-
-    .room-item-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 15px;
-    }
-
-    .room-item-title {
-      font-size: 20px;
-      font-weight: bold;
-      color: #ffff00;
-    }
-
-    .room-item-players {
-      font-size: 14px;
-      color: #00ffff;
-    }
-
-    .room-item-info {
-      font-size: 13px;
-      line-height: 1.8;
-      margin-bottom: 15px;
-      color: #00cc00;
-    }
-
-    .room-item-id {
-      font-size: 11px;
-      color: #666;
-      margin-bottom: 10px;
-    }
-
-    .empty-state {
-      color: #666;
-      font-style: italic;
-      text-align: center;
-      padding: 60px 20px;
-      font-size: 14px;
-    }
-
+    /* Buttons */
     button {
       background: #00ff00;
       color: #1a1a1a;
       border: none;
-      padding: 12px 24px;
+      padding: 14px 24px;
       font-family: 'Courier New', monospace;
       font-size: 14px;
       font-weight: bold;
       cursor: pointer;
-      border-radius: 5px;
+      border-radius: 8px;
       box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
       transition: all 0.2s;
+      -webkit-tap-highlight-color: transparent;
     }
 
     button:hover {
       background: #00cc00;
-      transform: translateY(-2px);
     }
 
     button:active {
-      transform: translateY(0);
+      transform: scale(0.98);
     }
 
     button:disabled {
@@ -204,38 +153,123 @@
       box-shadow: none;
     }
 
-    .join-btn {
-      width: 100%;
-    }
-
     .create-btn {
       width: 100%;
       font-size: 16px;
-      padding: 14px;
+      padding: 16px;
+      margin-top: 10px;
     }
 
-    /* Scrollbar styling */
-    .rooms-list::-webkit-scrollbar {
-      width: 8px;
+    .join-btn {
+      width: 100%;
+      margin-top: 12px;
     }
 
-    .rooms-list::-webkit-scrollbar-track {
-      background: #0a0a0a;
-      border-radius: 4px;
+    .refresh-btn {
+      background: transparent;
+      border: 2px solid #00ff00;
+      color: #00ff00;
+      padding: 10px 16px;
+      font-size: 12px;
+      box-shadow: none;
     }
 
-    .rooms-list::-webkit-scrollbar-thumb {
+    .refresh-btn:hover {
       background: #00ff00;
-      border-radius: 4px;
+      color: #1a1a1a;
     }
 
-    .rooms-list::-webkit-scrollbar-thumb:hover {
-      background: #00cc00;
+    /* Rooms Header */
+    .rooms-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      flex-wrap: wrap;
+      gap: 10px;
     }
 
+    .rooms-header .section-title {
+      margin-bottom: 0;
+    }
+
+    /* Rooms List */
+    .rooms-list {
+      max-height: 350px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .room-item {
+      background: rgba(0, 255, 0, 0.05);
+      border: 2px solid #00ff00;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 12px;
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+
+    .room-item:hover,
+    .room-item:active {
+      background: rgba(0, 255, 0, 0.1);
+      box-shadow: 0 0 15px rgba(0, 255, 0, 0.3);
+    }
+
+    .room-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .room-item-title {
+      font-size: 16px;
+      font-weight: bold;
+      color: #ffff00;
+    }
+
+    .room-item-players {
+      font-size: 13px;
+      color: #00ffff;
+      white-space: nowrap;
+    }
+
+    .room-item-info {
+      font-size: 12px;
+      line-height: 1.6;
+      margin-bottom: 10px;
+      color: #00cc00;
+    }
+
+    .room-item-id {
+      font-size: 10px;
+      color: #666;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+
+    /* Empty State */
+    .empty-state {
+      color: #666;
+      font-style: italic;
+      text-align: center;
+      padding: 40px 20px;
+      font-size: 13px;
+      line-height: 1.8;
+    }
+
+    .empty-state button {
+      margin-top: 15px;
+    }
+
+    /* Loading */
     .loading-spinner {
       text-align: center;
       color: #00ff00;
+      padding: 30px;
       animation: pulse 1.5s ease-in-out infinite;
     }
 
@@ -243,10 +277,123 @@
       0%, 100% { opacity: 1; }
       50% { opacity: 0.5; }
     }
+
+    /* Scrollbar */
+    .rooms-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .rooms-list::-webkit-scrollbar-track {
+      background: #0a0a0a;
+      border-radius: 3px;
+    }
+
+    .rooms-list::-webkit-scrollbar-thumb {
+      background: #00ff00;
+      border-radius: 3px;
+    }
+
+    /* Install prompt */
+    .install-prompt {
+      background: rgba(255, 255, 0, 0.1);
+      border: 2px solid #ffff00;
+      border-radius: 10px;
+      padding: 15px;
+      margin-bottom: 20px;
+      text-align: center;
+      display: none;
+    }
+
+    .install-prompt.visible {
+      display: block;
+    }
+
+    .install-prompt p {
+      color: #ffff00;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    .install-prompt button {
+      background: #ffff00;
+      color: #1a1a1a;
+    }
+
+    .install-dismiss {
+      background: transparent !important;
+      border: 1px solid #ffff00 !important;
+      color: #ffff00 !important;
+      margin-left: 10px;
+      padding: 8px 16px !important;
+      font-size: 12px !important;
+    }
+
+    /* Responsive adjustments */
+    @media (max-width: 400px) {
+      body {
+        padding: 15px;
+      }
+
+      .create-room-section,
+      .browse-rooms-section {
+        padding: 15px;
+      }
+
+      .room-item {
+        padding: 12px;
+      }
+    }
+
+    /* Landscape phone optimization */
+    @media (max-height: 500px) and (orientation: landscape) {
+      .lobby-title {
+        font-size: 24px;
+        margin-bottom: 5px;
+      }
+
+      .lobby-subtitle {
+        margin-bottom: 15px;
+        font-size: 11px;
+      }
+
+      .create-room-section,
+      .browse-rooms-section {
+        padding: 15px;
+        margin-bottom: 15px;
+      }
+
+      .section-title {
+        font-size: 16px;
+        margin-bottom: 10px;
+      }
+
+      .input-group {
+        margin: 10px 0;
+      }
+
+      .input-group input {
+        padding: 10px;
+      }
+
+      .create-btn {
+        padding: 12px;
+      }
+
+      .rooms-list {
+        max-height: 200px;
+      }
+    }
   </style>
 </head>
 <body>
   <div class="lobby-container">
+    <!-- Install Prompt (for iOS/Android) -->
+    <div class="install-prompt" id="installPrompt">
+      <p>Install this app for the best experience!</p>
+      <button onclick="installApp()">Install</button>
+      <button class="install-dismiss" onclick="dismissInstall()">Later</button>
+    </div>
+
     <div class="lobby-title">DUNGEON SHOOTER</div>
     <div class="lobby-subtitle">Multiplayer Roguelike Action</div>
 
@@ -256,22 +403,22 @@
       
       <div class="input-group">
         <label for="playerName">Your Name</label>
-        <input type="text" id="playerName" placeholder="Enter your name" />
+        <input type="text" id="playerName" placeholder="Enter your name" autocomplete="off" autocapitalize="words" />
       </div>
 
       <div class="input-group">
         <label for="roomName">Room Name (optional)</label>
-        <input type="text" id="roomName" placeholder="My Awesome Game" />
+        <input type="text" id="roomName" placeholder="My Awesome Game" autocomplete="off" />
       </div>
 
-      <button class="create-btn" onclick="createGame()">Create Room & Start Playing</button>
+      <button class="create-btn" onclick="createGame()">Create Room & Play</button>
     </div>
 
     <!-- Browse Rooms Section -->
     <div class="browse-rooms-section">
       <div class="rooms-header">
-        <div class="section-title" style="margin-bottom: 0;">Join Existing Room</div>
-        <button class="refresh-btn" onclick="refreshRoomList()">🔄 Refresh</button>
+        <div class="section-title">Join Room</div>
+        <button class="refresh-btn" onclick="refreshRoomList()">Refresh</button>
       </div>
 
       <div class="rooms-list" id="roomsList">
@@ -282,5 +429,66 @@
 
   <script src="https://unpkg.com/colyseus.js@^0.16.0/dist/colyseus.js"></script>
   <script src="lobby.js"></script>
+  <script>
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then((registration) => {
+            console.log('SW registered:', registration.scope);
+          })
+          .catch((error) => {
+            console.log('SW registration failed:', error);
+          });
+      });
+    }
+
+    // PWA Install Prompt
+    let deferredPrompt;
+    
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      
+      // Show install prompt if not dismissed before
+      if (!localStorage.getItem('installDismissed')) {
+        document.getElementById('installPrompt').classList.add('visible');
+      }
+    });
+
+    function installApp() {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then((choiceResult) => {
+          if (choiceResult.outcome === 'accepted') {
+            console.log('User accepted the install prompt');
+          }
+          deferredPrompt = null;
+          document.getElementById('installPrompt').classList.remove('visible');
+        });
+      }
+    }
+
+    function dismissInstall() {
+      localStorage.setItem('installDismissed', 'true');
+      document.getElementById('installPrompt').classList.remove('visible');
+    }
+
+    // iOS install hint
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isStandalone = window.navigator.standalone;
+    
+    if (isIOS && !isStandalone && !localStorage.getItem('installDismissed')) {
+      const prompt = document.getElementById('installPrompt');
+      prompt.innerHTML = `
+        <p>Add to Home Screen for the best experience!</p>
+        <p style="font-size: 11px; color: #888; margin-top: 5px;">
+          Tap <strong>Share</strong> then <strong>Add to Home Screen</strong>
+        </p>
+        <button class="install-dismiss" onclick="dismissInstall()" style="margin-top: 10px;">Got it</button>
+      `;
+      prompt.classList.add('visible');
+    }
+  </script>
 </body>
 </html>

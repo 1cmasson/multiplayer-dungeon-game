@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#1a1a1a"/>
+  <rect x="40" y="40" width="432" height="432" fill="#0a0a0a" rx="20"/>
+  
+  <!-- Dungeon floor pattern -->
+  <g fill="#2a2a2a">
+    <rect x="80" y="80" width="80" height="80"/>
+    <rect x="200" y="80" width="80" height="80"/>
+    <rect x="320" y="80" width="80" height="80"/>
+    <rect x="140" y="160" width="80" height="80"/>
+    <rect x="260" y="160" width="80" height="80"/>
+    <rect x="80" y="240" width="80" height="80"/>
+    <rect x="200" y="240" width="80" height="80"/>
+    <rect x="320" y="240" width="80" height="80"/>
+    <rect x="140" y="320" width="80" height="80"/>
+    <rect x="260" y="320" width="80" height="80"/>
+  </g>
+  
+  <!-- Player triangle -->
+  <polygon points="256,150 306,250 206,250" fill="#00ff00"/>
+  <polygon points="256,150 306,250 206,250" fill="none" stroke="#00cc00" stroke-width="4"/>
+  
+  <!-- Enemy bot -->
+  <circle cx="350" cy="350" r="40" fill="#ff0000"/>
+  <circle cx="350" cy="350" r="40" fill="none" stroke="#cc0000" stroke-width="4"/>
+  
+  <!-- Bullet -->
+  <circle cx="290" cy="280" r="12" fill="#ffff00"/>
+  
+  <!-- Text -->
+  <text x="256" y="470" text-anchor="middle" fill="#00ff00" font-family="Courier New, monospace" font-size="48" font-weight="bold">DS</text>
+</svg>

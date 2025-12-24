@@ -14,6 +14,322 @@ let bytesReceived = 0;
 let messagesReceived = 0;
 let initialStateSizeBytes = 0;
 
+// ==========================================
+// TOUCH CONTROLS SYSTEM
+// ==========================================
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+let touchControlsEnabled = isTouchDevice;
+
+// Touch state tracking
+const touchState = {
+  // Movement joystick
+  moveTouch: null,        // Active touch for movement
+  moveStartX: 0,          // Where the touch started
+  moveStartY: 0,
+  moveCurrentX: 0,        // Current touch position
+  moveCurrentY: 0,
+  moveDeltaX: 0,          // Normalized direction (-1 to 1)
+  moveDeltaY: 0,
+  isMoving: false,
+  
+  // Shooting
+  shootTouch: null,       // Active touch for shooting
+  lastShootTime: 0,       // Throttle shooting
+  shootCooldown: 150,     // ms between shots
+};
+
+// Joystick configuration
+const JOYSTICK_DEAD_ZONE = 10;      // Pixels before movement registers
+const JOYSTICK_MAX_DISTANCE = 60;   // Max distance from start point
+
+// Initialize touch controls
+function initTouchControls() {
+  if (!touchControlsEnabled) return;
+  
+  const touchControls = document.getElementById('touchControls');
+  const moveZone = document.getElementById('moveZone');
+  const shootZone = document.getElementById('shootZone');
+  
+  if (!touchControls || !moveZone || !shootZone) {
+    console.warn('Touch control elements not found');
+    return;
+  }
+  
+  touchControls.classList.add('active');
+  
+  // Movement zone handlers
+  moveZone.addEventListener('touchstart', handleMoveStart, { passive: false });
+  moveZone.addEventListener('touchmove', handleMoveMove, { passive: false });
+  moveZone.addEventListener('touchend', handleMoveEnd, { passive: false });
+  moveZone.addEventListener('touchcancel', handleMoveEnd, { passive: false });
+  
+  // Shoot zone handlers
+  shootZone.addEventListener('touchstart', handleShootStart, { passive: false });
+  shootZone.addEventListener('touchend', handleShootEnd, { passive: false });
+  shootZone.addEventListener('touchcancel', handleShootEnd, { passive: false });
+  
+  // Prevent default touch behaviors on canvas
+  canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+  
+  // Show touch hint briefly
+  showTouchHint();
+  
+  console.log('Touch controls initialized');
+}
+
+// Show touch hint for new users
+function showTouchHint() {
+  const hasSeenHint = localStorage.getItem('touchHintSeen');
+  if (hasSeenHint) return;
+  
+  const hint = document.getElementById('touchHint');
+  if (!hint) return;
+  
+  // Show after a short delay
+  setTimeout(() => {
+    hint.classList.add('visible');
+    
+    // Hide after 3 seconds
+    setTimeout(() => {
+      hint.classList.remove('visible');
+      localStorage.setItem('touchHintSeen', 'true');
+    }, 3000);
+  }, 1000);
+}
+
+// Movement touch handlers
+function handleMoveStart(e) {
+  e.preventDefault();
+  
+  if (touchState.moveTouch !== null) return; // Already tracking a touch
+  
+  const touch = e.changedTouches[0];
+  touchState.moveTouch = touch.identifier;
+  touchState.moveStartX = touch.clientX;
+  touchState.moveStartY = touch.clientY;
+  touchState.moveCurrentX = touch.clientX;
+  touchState.moveCurrentY = touch.clientY;
+  touchState.isMoving = false;
+  
+  // Show joystick visual at touch point
+  showJoystickVisual(touch.clientX, touch.clientY);
+}
+
+function handleMoveMove(e) {
+  e.preventDefault();
+  
+  // Find our tracked touch
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const touch = e.changedTouches[i];
+    if (touch.identifier === touchState.moveTouch) {
+      touchState.moveCurrentX = touch.clientX;
+      touchState.moveCurrentY = touch.clientY;
+      
+      // Calculate delta from start position
+      let dx = touchState.moveCurrentX - touchState.moveStartX;
+      let dy = touchState.moveCurrentY - touchState.moveStartY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      // Apply dead zone
+      if (distance < JOYSTICK_DEAD_ZONE) {
+        touchState.moveDeltaX = 0;
+        touchState.moveDeltaY = 0;
+        touchState.isMoving = false;
+      } else {
+        // Normalize and clamp
+        const clampedDistance = Math.min(distance, JOYSTICK_MAX_DISTANCE);
+        touchState.moveDeltaX = (dx / distance) * (clampedDistance / JOYSTICK_MAX_DISTANCE);
+        touchState.moveDeltaY = (dy / distance) * (clampedDistance / JOYSTICK_MAX_DISTANCE);
+        touchState.isMoving = true;
+      }
+      
+      // Update joystick visual
+      updateJoystickVisual(touchState.moveStartX, touchState.moveStartY, dx, dy);
+      break;
+    }
+  }
+}
+
+function handleMoveEnd(e) {
+  e.preventDefault();
+  
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const touch = e.changedTouches[i];
+    if (touch.identifier === touchState.moveTouch) {
+      touchState.moveTouch = null;
+      touchState.moveDeltaX = 0;
+      touchState.moveDeltaY = 0;
+      touchState.isMoving = false;
+      
+      // Hide joystick visual
+      hideJoystickVisual();
+      break;
+    }
+  }
+}
+
+// Shoot touch handlers
+function handleShootStart(e) {
+  e.preventDefault();
+  
+  const touch = e.changedTouches[0];
+  touchState.shootTouch = touch.identifier;
+  
+  // Get touch position relative to canvas for aiming
+  const rect = canvas.getBoundingClientRect();
+  const touchX = touch.clientX - rect.left;
+  const touchY = touch.clientY - rect.top;
+  
+  // Calculate angle from player to touch point and shoot
+  shootAtPoint(touchX, touchY);
+  
+  // Show shoot indicator
+  showShootIndicator(touch.clientX, touch.clientY);
+}
+
+function handleShootEnd(e) {
+  e.preventDefault();
+  
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const touch = e.changedTouches[i];
+    if (touch.identifier === touchState.shootTouch) {
+      touchState.shootTouch = null;
+      break;
+    }
+  }
+}
+
+// Shoot at a specific screen point
+function shootAtPoint(screenX, screenY) {
+  if (!room || !mySessionId) return;
+  
+  const myPlayer = room.state.players.get(mySessionId);
+  if (!myPlayer || myPlayer.lives <= 0) return;
+  
+  // Throttle shooting
+  const now = Date.now();
+  if (now - touchState.lastShootTime < touchState.shootCooldown) return;
+  touchState.lastShootTime = now;
+  
+  // Calculate angle from player position to touch point
+  const playerScreenX = (myPlayer.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
+  const playerScreenY = (myPlayer.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
+  const angle = Math.atan2(screenY - playerScreenY, screenX - playerScreenX);
+  
+  // Update player angle and shoot
+  room.send('updateAngle', { angle });
+  room.send('shoot', { angle });
+  
+  console.log('Touch shoot at angle:', angle.toFixed(2));
+}
+
+// Joystick visual feedback
+function showJoystickVisual(x, y) {
+  const visual = document.getElementById('joystickVisual');
+  if (!visual) return;
+  
+  const base = visual.querySelector('.joystick-base');
+  const knob = visual.querySelector('.joystick-knob');
+  
+  base.style.left = x + 'px';
+  base.style.top = y + 'px';
+  knob.style.left = x + 'px';
+  knob.style.top = y + 'px';
+  
+  visual.classList.add('active');
+}
+
+function updateJoystickVisual(startX, startY, dx, dy) {
+  const visual = document.getElementById('joystickVisual');
+  if (!visual) return;
+  
+  const knob = visual.querySelector('.joystick-knob');
+  
+  // Clamp knob position
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const clampedDistance = Math.min(distance, JOYSTICK_MAX_DISTANCE);
+  
+  let knobX = startX;
+  let knobY = startY;
+  
+  if (distance > 0) {
+    knobX = startX + (dx / distance) * clampedDistance;
+    knobY = startY + (dy / distance) * clampedDistance;
+  }
+  
+  knob.style.left = knobX + 'px';
+  knob.style.top = knobY + 'px';
+}
+
+function hideJoystickVisual() {
+  const visual = document.getElementById('joystickVisual');
+  if (visual) {
+    visual.classList.remove('active');
+  }
+}
+
+function showShootIndicator(x, y) {
+  const indicator = document.getElementById('shootIndicator');
+  if (!indicator) return;
+  
+  indicator.style.left = x + 'px';
+  indicator.style.top = y + 'px';
+  indicator.classList.add('active');
+  
+  // Remove animation class after it completes
+  setTimeout(() => {
+    indicator.classList.remove('active');
+  }, 150);
+}
+
+// Process touch movement input (called in game loop)
+function processTouchMovement() {
+  if (!touchControlsEnabled || !touchState.isMoving) return;
+  if (!room || !mySessionId) return;
+  
+  const myPlayer = room.state.players.get(mySessionId);
+  if (!myPlayer || myPlayer.lives <= 0) return;
+  
+  // Determine dominant direction from joystick delta
+  const absX = Math.abs(touchState.moveDeltaX);
+  const absY = Math.abs(touchState.moveDeltaY);
+  
+  // Use threshold to determine if we should move
+  const threshold = 0.3;
+  
+  let direction = null;
+  
+  if (absX > absY && absX > threshold) {
+    direction = touchState.moveDeltaX > 0 ? 'right' : 'left';
+  } else if (absY > absX && absY > threshold) {
+    direction = touchState.moveDeltaY > 0 ? 'down' : 'up';
+  }
+  
+  if (direction) {
+    room.send('move', { direction });
+  }
+}
+
+// Touch movement processing interval
+let touchMoveInterval = null;
+
+function startTouchMoveLoop() {
+  if (touchMoveInterval) return;
+  
+  // Process touch movement every 100ms (same rate as keyboard repeat)
+  touchMoveInterval = setInterval(() => {
+    processTouchMovement();
+  }, 100);
+}
+
+function stopTouchMoveLoop() {
+  if (touchMoveInterval) {
+    clearInterval(touchMoveInterval);
+    touchMoveInterval = null;
+  }
+}
+
 // Seeded Random Number Generator (must match server-side)
 class SeededRandom {
   constructor(seed) {
@@ -342,16 +658,26 @@ const TILE_SIZE = 16;
 let VIEWPORT_TILES_X = 50;
 let VIEWPORT_TILES_Y = 50;
 
-// Resize canvas to fit viewport while maintaining aspect ratio
+// Resize canvas to fill available space (mobile-first)
 function resizeCanvas() {
-  const maxWidth = Math.min(800, window.innerWidth * 0.9);
-  const maxHeight = Math.min(800, window.innerHeight * 0.7);
-
-  // Keep it square for simplicity
-  const size = Math.min(maxWidth, maxHeight);
-
-  canvas.width = size;
-  canvas.height = size;
+  // Get container or window dimensions
+  const container = document.getElementById('gameContainer');
+  
+  let availableWidth, availableHeight;
+  
+  if (isTouchDevice) {
+    // Mobile: Fill the entire screen
+    availableWidth = window.innerWidth;
+    availableHeight = window.innerHeight;
+  } else {
+    // Desktop: Use container or reasonable max size
+    availableWidth = Math.min(window.innerWidth * 0.95, 1200);
+    availableHeight = Math.min(window.innerHeight * 0.85, 900);
+  }
+  
+  // Set canvas to fill available space
+  canvas.width = availableWidth;
+  canvas.height = availableHeight;
 
   // Update viewport calculations
   VIEWPORT_TILES_X = Math.floor(canvas.width / TILE_SIZE);
@@ -359,13 +685,24 @@ function resizeCanvas() {
 
   // Re-render after resize
   render();
+  
+  console.log(`Canvas resized: ${canvas.width}x${canvas.height}, viewport: ${VIEWPORT_TILES_X}x${VIEWPORT_TILES_Y} tiles`);
 }
 
 // Initialize canvas size
 resizeCanvas();
 
-// Handle window resize
-window.addEventListener('resize', resizeCanvas);
+// Handle window resize with debouncing
+let resizeTimeout;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(resizeCanvas, 100);
+});
+
+// Handle orientation change
+window.addEventListener('orientationchange', () => {
+  setTimeout(resizeCanvas, 200);
+});
 
 // Tile colors (improved contrast)
 const COLORS = {
@@ -1432,11 +1769,9 @@ window.toggleDebugPanel = function() {
   const panel = document.getElementById('debugPanel');
   
   if (debugConfig.panelOpen) {
-    panel.classList.remove('hidden');
-    document.body.classList.add('debug-open');
+    panel.classList.add('visible');
   } else {
-    panel.classList.add('hidden');
-    document.body.classList.remove('debug-open');
+    panel.classList.remove('visible');
   }
 };
 
@@ -1655,6 +1990,12 @@ function updateActivityFeed() {
 
 // Auto-connect when page loads (if coming from lobby)
 autoConnectFromLobby();
+
+// Initialize touch controls if on touch device
+if (isTouchDevice) {
+  initTouchControls();
+  startTouchMoveLoop();
+}
 
 // Render loop
 setInterval(render, 1000 / 30); // 30 FPS
