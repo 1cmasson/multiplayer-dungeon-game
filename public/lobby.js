@@ -1,7 +1,34 @@
 // Lobby JavaScript for Multiplayer Dungeon Shooter
 
-const client = new Colyseus.Client('ws://localhost:2567');
-const SERVER_URL = 'http://localhost:2567';
+// Dynamically determine server URL based on environment
+function getServerConfig() {
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  
+  if (isLocalhost) {
+    // Local development
+    return {
+      wsUrl: 'ws://localhost:2567',
+      httpUrl: 'http://localhost:2567'
+    };
+  } else {
+    // Production (Railway or other hosted environment)
+    // Use secure WebSocket (wss) and HTTPS
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const httpProtocol = window.location.protocol;
+    const host = window.location.host; // includes port if non-standard
+    
+    return {
+      wsUrl: `${protocol}//${host}`,
+      httpUrl: `${httpProtocol}//${host}`
+    };
+  }
+}
+
+const serverConfig = getServerConfig();
+const client = new Colyseus.Client(serverConfig.wsUrl);
+const SERVER_URL = serverConfig.httpUrl;
+
+console.log('🌐 Server config:', serverConfig);
 let roomBrowserInterval = null;
 let lastRoomsHash = ''; // Track room list to avoid unnecessary re-renders
 let isFirstLoad = true;

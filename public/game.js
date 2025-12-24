@@ -380,11 +380,36 @@ const COLORS = {
   OTHER_PLAYER: '#8bac0f', // Light (other players)
 };
 
+// Dynamically determine server URL based on environment
+function getServerConfig() {
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  
+  if (isLocalhost) {
+    // Local development
+    return {
+      wsUrl: 'ws://localhost:2567',
+      httpUrl: 'http://localhost:2567'
+    };
+  } else {
+    // Production (Railway or other hosted environment)
+    // Use secure WebSocket (wss) and HTTPS
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const httpProtocol = window.location.protocol;
+    const host = window.location.host; // includes port if non-standard
+    
+    return {
+      wsUrl: `${protocol}//${host}`,
+      httpUrl: `${httpProtocol}//${host}`
+    };
+  }
+}
+
+const serverConfig = getServerConfig();
+console.log('🌐 Server config:', serverConfig);
+
 // Connect to server
 async function connect(roomName, create = false, playerName = '') {
-  const host = window.location.hostname;
-  const port = 2567;
-  const client = new Colyseus.Client(`ws://${host}:${port}`);
+  const client = new Colyseus.Client(serverConfig.wsUrl);
 
   try {
     if (create) {
