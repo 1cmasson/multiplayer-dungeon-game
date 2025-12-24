@@ -5,7 +5,7 @@ import { EnemyBotManager } from '../game/EnemyBotManager';
 import { CollisionManager } from '../game/CollisionManager';
 
 export class DungeonRoom extends Room<DungeonState> {
-  maxClients = 4;
+  maxClients = 8;
   private dungeonData: any;
   private levelSeeds: number[] = []; // Seeds for all 4 levels
   private updateInterval: any; // Game loop
@@ -16,6 +16,26 @@ export class DungeonRoom extends Room<DungeonState> {
 
   onCreate(options: any) {
     this.state = new DungeonState();
+
+    // Set room name if provided
+    if (options.roomName) {
+      this.state.roomName = options.roomName;
+    }
+
+    // Game starts in waiting state
+    this.state.gameStarted = false;
+    this.state.hostSessionId = ""; // Will be set when first player joins
+
+    // Set room metadata for lobby listing
+    this.setMetadata({
+      roomName: this.state.roomName || 'Unnamed Room',
+      hostName: 'Waiting for players...',
+      currentLevel: 1,
+      totalLevels: 5,
+      currentLevelKills: 0,
+      killsNeededForNextLevel: 10,
+      gameStarted: false
+    });
 
     // Generate 4 unique seeds for 4 levels
     const baseSeed = options.seed || Date.now();
@@ -38,11 +58,8 @@ export class DungeonRoom extends Room<DungeonState> {
     this.enemyBotManager = new EnemyBotManager(this.state, this.dungeonData);
     this.collisionManager = new CollisionManager(this.state, this.dungeonData);
 
-    // Spawn initial bots based on level
-    this.enemyBotManager.spawnBots(
-      this.enemyBotManager.getBotsForLevel(1),
-      this.state.players
-    );
+    // NOTE: Don't spawn bots here - wait for first player to join
+    // Bots will be spawned in onJoin() when first player arrives
 
     // Start game loop for bullets, bots, collisions
     this.startGameLoop();
@@ -102,6 +119,56 @@ export class DungeonRoom extends Room<DungeonState> {
 
       this.createBullet(player.x, player.y, message.angle, client.sessionId);
     });
+
+    // Handle game start (only host can start)
+    this.onMessage("startGame", (client, message) => {
+      // Only host can start the game
+      if (client.sessionId !== this.state.hostSessionId) {
+        console.log(`⚠️ Non-host ${client.sessionId} tried to start game`);
+        return;
+      }
+      
+      // Don't start if already started
+      if (this.state.gameStarted) {
+        console.log('⚠️ Game already started');
+        return;
+      }
+
+      console.log(`🎮 Host ${client.sessionId} starting the game!`);
+      this.state.gameStarted = true;
+
+      // Spawn bots now that game is starting
+      const botCount = this.enemyBotManager.getBotsForLevel(this.state.currentLevel);
+      this.enemyBotManager.spawnBots(botCount, this.state.players);
+      console.log('🤖 Spawned', this.state.bots.size, 'bots for level', this.state.currentLevel);
+
+      // Get host player name for broadcast
+      const hostPlayer = this.state.players.get(client.sessionId);
+      const hostName = hostPlayer ? hostPlayer.name : 'Host';
+
+      // Update metadata
+      this.setMetadata({
+        roomName: this.state.roomName || 'Unnamed Room',
+        hostName: hostName,
+        currentLevel: this.state.currentLevel,
+        totalLevels: this.state.totalLevels,
+        currentLevelKills: this.state.currentLevelKills,
+        killsNeededForNextLevel: this.state.killsNeededForNextLevel,
+        gameStarted: true
+      });
+
+      // Broadcast game started to all clients
+      this.broadcast('gameStarted', { 
+        hostName: hostName,
+        botCount: botCount
+      });
+
+      // Broadcast activity
+      this.broadcast('activity', {
+        type: 'level',
+        text: `Game started by ${hostName}! Kill ${this.state.killsNeededForNextLevel} bots!`
+      });
+    });
   }
 
   onJoin(client: Client, options: any) {
@@ -109,6 +176,7 @@ export class DungeonRoom extends Room<DungeonState> {
 
     const player = new Player();
     player.sessionId = client.sessionId;
+    player.name = options.playerName || `Player${Math.floor(Math.random() * 1000)}`;
     // Ensure integer tile coordinates for player spawn
     player.x = Math.floor(this.dungeonData.spawnPoint.x);
     player.y = Math.floor(this.dungeonData.spawnPoint.y);
@@ -119,13 +187,81 @@ export class DungeonRoom extends Room<DungeonState> {
 
     this.state.players.set(client.sessionId, player);
 
+    // Set first player as host
+    if (this.state.players.size === 1) {
+      this.state.hostSessionId = client.sessionId;
+      console.log(`👑 ${player.name} (${client.sessionId}) is the host`);
+      
+      this.setMetadata({
+        roomName: this.state.roomName || 'Unnamed Room',
+        hostName: player.name,
+        currentLevel: this.state.currentLevel,
+        totalLevels: this.state.totalLevels,
+        currentLevelKills: this.state.currentLevelKills,
+        killsNeededForNextLevel: this.state.killsNeededForNextLevel,
+        gameStarted: this.state.gameStarted
+      });
+    }
+
+    // Broadcast player joined activity
+    this.broadcast('activity', {
+      type: 'join',
+      text: `${player.name} joined the game`
+    });
+
+    // If game already started (player joining mid-game), they join the active game
+    // Bots are only spawned when host clicks "Start Game"
+
     // Measure state size after player joins
     this.measureStateSize();
   }
 
   onLeave(client: Client, consented: boolean) {
     console.log(`${client.sessionId} left!`);
+    const player = this.state.players.get(client.sessionId);
+    if (player) {
+      // Broadcast player left activity
+      this.broadcast('activity', {
+        type: 'leave',
+        text: `${player.name} left the game`
+      });
+    }
     this.state.players.delete(client.sessionId);
+
+    // Handle host leaving before game starts - transfer host to next player
+    if (client.sessionId === this.state.hostSessionId && !this.state.gameStarted) {
+      // Find next player to be host
+      const remainingPlayers = Array.from(this.state.players.keys());
+      if (remainingPlayers.length > 0) {
+        const newHostId = remainingPlayers[0];
+        const newHost = this.state.players.get(newHostId);
+        this.state.hostSessionId = newHostId;
+        
+        console.log(`👑 Host transferred to ${newHost?.name} (${newHostId})`);
+        
+        // Broadcast host change
+        this.broadcast('hostChanged', {
+          newHostId: newHostId,
+          newHostName: newHost?.name || 'Unknown'
+        });
+        
+        this.broadcast('activity', {
+          type: 'level',
+          text: `${newHost?.name} is now the host`
+        });
+
+        // Update metadata
+        this.setMetadata({
+          roomName: this.state.roomName || 'Unnamed Room',
+          hostName: newHost?.name || 'Unknown',
+          currentLevel: this.state.currentLevel,
+          totalLevels: this.state.totalLevels,
+          currentLevelKills: this.state.currentLevelKills,
+          killsNeededForNextLevel: this.state.killsNeededForNextLevel,
+          gameStarted: this.state.gameStarted
+        });
+      }
+    }
   }
 
   onDispose() {
@@ -144,9 +280,25 @@ export class DungeonRoom extends Room<DungeonState> {
 
     this.updateInterval = setInterval(() => {
       this.updateBullets(DELTA_TIME / 1000);
-      this.enemyBotManager.updateBots(DELTA_TIME / 1000, this.state.players);
-      this.checkCollisions();
+      
+      // Only update bots and check bot collisions if game has started
+      if (this.state.gameStarted) {
+        this.enemyBotManager.updateBots(DELTA_TIME / 1000, this.state.players);
+        this.checkCollisions();
+      }
     }, DELTA_TIME);
+
+    // Broadcast bot paths for debugging (every 500ms to reduce network traffic)
+    setInterval(() => {
+      const botPaths = this.enemyBotManager.getBotPaths();
+      const pathsData: { [key: string]: Array<{ x: number; y: number }> } = {};
+      
+      botPaths.forEach((path, botId) => {
+        pathsData[botId] = path;
+      });
+      
+      this.broadcast('botPaths', pathsData);
+    }, 500);
   }
 
   /**
@@ -231,12 +383,24 @@ export class DungeonRoom extends Room<DungeonState> {
 
         console.log(`💀 Bot ${event.botId} killed by ${event.playerId}. Level kills: ${this.state.currentLevelKills}/${this.state.killsNeededForNextLevel}`);
 
+        // Broadcast kill activity
+        this.broadcast('activity', {
+          type: 'kill',
+          text: `${player.name} killed a bot (${this.state.currentLevelKills}/${this.state.killsNeededForNextLevel})`
+        });
+
         if (this.state.currentLevelKills >= this.state.killsNeededForNextLevel) {
           this.advanceToNextLevel(event.playerId);
         } else {
           // Spawn new bot
           if (this.state.bots.size < this.enemyBotManager.getBotsForLevel(this.state.currentLevel)) {
             this.enemyBotManager.spawnBots(1, this.state.players);
+            
+            // Broadcast bot spawn activity
+            this.broadcast('activity', {
+              type: 'spawn',
+              text: '1 bot spawned'
+            });
           }
         }
       }
@@ -250,13 +414,28 @@ export class DungeonRoom extends Room<DungeonState> {
 
     // Handle player hit events
     playerResult.hitEvents.forEach(event => {
+      const player = this.state.players.get(event.playerId);
+      if (!player) return;
+
       if (event.livesRemaining > 0) {
+        // Broadcast player hit activity
+        this.broadcast('activity', {
+          type: 'death',
+          text: `${player.name} lost a life! (${event.livesRemaining} remaining)`
+        });
+
         this.broadcast("playerHit", {
           playerId: event.playerId,
           livesRemaining: event.livesRemaining,
           invincibilitySeconds: 3
         });
       } else {
+        // Broadcast game over activity
+        this.broadcast('activity', {
+          type: 'death',
+          text: `${player.name} ran out of lives`
+        });
+
         this.broadcast("gameOver", { playerId: event.playerId });
       }
     });
@@ -267,10 +446,18 @@ export class DungeonRoom extends Room<DungeonState> {
    */
   private advanceToNextLevel(triggerPlayerSessionId: string): void {
     const nextLevel = this.state.currentLevel + 1;
+    const player = this.state.players.get(triggerPlayerSessionId);
 
     if (nextLevel > this.state.totalLevels) {
       // Completed all levels!
       console.log(`🎉 Player ${triggerPlayerSessionId} completed all ${this.state.totalLevels} levels!`);
+      
+      // Broadcast game completion activity
+      this.broadcast('activity', {
+        type: 'level',
+        text: `${player?.name || 'A player'} completed all ${this.state.totalLevels} levels!`
+      });
+
       this.broadcast("gameCompleted", {
         triggerPlayer: triggerPlayerSessionId,
         totalKills: this.state.totalKills
@@ -284,6 +471,13 @@ export class DungeonRoom extends Room<DungeonState> {
     } else {
       // Advance to next level
       console.log(`🎯 Level ${this.state.currentLevel} complete! Advancing to Level ${nextLevel}...`);
+      
+      // Broadcast level advance activity
+      this.broadcast('activity', {
+        type: 'level',
+        text: `Level ${nextLevel} started! ${player?.name || 'A player'} completed level ${this.state.currentLevel}!`
+      });
+
       this.state.currentLevel = nextLevel;
       this.state.currentLevelKills = 0;
       this.state.killsNeededForNextLevel = this.getKillsForLevel(nextLevel);
@@ -305,6 +499,17 @@ export class DungeonRoom extends Room<DungeonState> {
       player.y = Math.floor(this.dungeonData.spawnPoint.y);
     });
 
+    // Update metadata for lobby
+    const hostPlayer = this.state.players.size > 0 ? Array.from(this.state.players.values())[0] : null;
+    this.setMetadata({
+      roomName: this.state.roomName || 'Unnamed Room',
+      hostName: hostPlayer?.name || 'Unknown',
+      currentLevel: this.state.currentLevel,
+      totalLevels: this.state.totalLevels,
+      currentLevelKills: this.state.currentLevelKills,
+      killsNeededForNextLevel: this.state.killsNeededForNextLevel
+    });
+
     // Broadcast level change to all clients
     this.broadcast("levelAdvanced", {
       newLevel: this.state.currentLevel,
@@ -320,7 +525,7 @@ export class DungeonRoom extends Room<DungeonState> {
   private generateLevel(level: number): void {
     const difficulty = level; // Difficulty increases with level
     const seed = this.levelSeeds[level - 1];
-    const generator = new DungeonGenerator(50, 50, seed);
+    const generator = new DungeonGenerator(120, 120, seed);
     this.dungeonData = generator.generate(difficulty);
 
     // Set dungeon state (seed-based - clients will regenerate from seed)

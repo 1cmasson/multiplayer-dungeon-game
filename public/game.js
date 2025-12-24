@@ -88,9 +88,9 @@ class DungeonGenerator {
     const startX = Math.min(x1, x2);
     const endX = Math.max(x1, x2);
 
-    // Make corridor 2 tiles wide
+    // Make corridor 4 tiles wide for better multiplayer navigation
     for (let x = startX; x <= endX; x++) {
-      for (let offset = 0; offset < 2; offset++) {
+      for (let offset = 0; offset < 4; offset++) {
         const corridorY = y + offset;
         if (corridorY >= 0 && corridorY < this.height && x >= 0 && x < this.width) {
           this.grid[corridorY][x] = TileType.FLOOR;
@@ -103,9 +103,9 @@ class DungeonGenerator {
     const startY = Math.min(y1, y2);
     const endY = Math.max(y1, y2);
 
-    // Make corridor 2 tiles wide
+    // Make corridor 4 tiles wide for better multiplayer navigation
     for (let y = startY; y <= endY; y++) {
-      for (let offset = 0; offset < 2; offset++) {
+      for (let offset = 0; offset < 4; offset++) {
         const corridorX = x + offset;
         if (y >= 0 && y < this.height && corridorX >= 0 && corridorX < this.width) {
           this.grid[y][corridorX] = TileType.FLOOR;
@@ -179,9 +179,9 @@ class DungeonGenerator {
     this.grid = this.createEmptyGrid();
     this.rooms = [];
 
-    const numRooms = Math.min(5 + difficulty, 10);
-    const minRoomSize = 4;
-    const maxRoomSize = 8;
+    const numRooms = Math.min(8 + difficulty, 15);
+    const minRoomSize = 6;
+    const maxRoomSize = 12;
 
     let attempts = 0;
     const maxAttempts = 100;
@@ -212,8 +212,8 @@ class DungeonGenerator {
     this.grid[spawnY][spawnX] = TileType.SPAWN;
 
     // Find a suitable exit point that's far from spawn
-    // Minimum distance should be at least 30 tiles for a good journey
-    const MIN_DISTANCE = 30;
+    // Minimum distance should be at least 60 tiles for a good journey on 120x120 map
+    const MIN_DISTANCE = 60;
     let exitRoomIndex = this.rooms.length - 1;
     let exitX = 0;
     let exitY = 0;
@@ -267,14 +267,26 @@ class DungeonGenerator {
 // Game state
 let room = null;
 let mySessionId = null;
+let roomHostId = null; // Track who created the room
 let dungeonGrid = [];
-let dungeonWidth = 50;
-let dungeonHeight = 50;
+let dungeonWidth = 120;
+let dungeonHeight = 120;
 let activeTransports = []; // Track active transport locations from server
 let teleportAnimations = []; // Track tiles that should fade out (destination indicators)
 let muzzleFlashes = []; // Track muzzle flash effects
 let damageEffects = []; // Track damage numbers and effects
 let botPaths = {}; // Track bot paths for debugging visualization
+
+// Waiting room state
+let isHost = false;
+let gameStarted = false;
+
+// Debug configuration
+let debugConfig = {
+  showBotPaths: false,      // OFF by default
+  showBotStats: false,
+  panelOpen: false
+};
 
 // Bot interpolation system for smooth movement
 const botInterpolation = new Map(); // botId → { prevX, prevY, prevTargetX, prevTargetY, startTime }
@@ -369,7 +381,7 @@ const COLORS = {
 };
 
 // Connect to server
-async function connect(roomName, create = false) {
+async function connect(roomName, create = false, playerName = '') {
   const host = window.location.hostname;
   const port = 2567;
   const client = new Colyseus.Client(`ws://${host}:${port}`);
@@ -377,22 +389,43 @@ async function connect(roomName, create = false) {
   try {
     if (create) {
       // Create new room
-      room = await client.create('dungeon', { roomName, difficulty: 1 });
+      room = await client.create('dungeon', { roomName, difficulty: 1, playerName });
     } else if (roomName) {
-      // Join specific room by name
-      room = await client.joinById(roomName);
+      // Join specific room by ID
+      room = await client.joinById(roomName, { playerName });
     } else {
       // Join or create any available room
-      room = await client.joinOrCreate('dungeon', { difficulty: 1 });
+      room = await client.joinOrCreate('dungeon', { difficulty: 1, playerName });
     }
     mySessionId = room.sessionId;
 
-    statusEl.textContent = 'Connected! Kill the bots!';
-    roomIdEl.textContent = room.id || 'Unknown';
+    // Host status will be set based on server state
+    // Don't assume host based on create - let server be authoritative
+    
+    statusEl.textContent = 'Connected! Waiting for game to start...';
+    roomIdEl.textContent = room.roomId || 'Unknown';
 
     // Wait for state to be initialized before setting UI
     // These will be updated properly in the state change handler
-    console.log('Joined room:', room.id);
+    console.log('Joined room:', room.roomId);
+    
+    // Update panel display with room info
+    updatePanelDisplay();
+    
+    // Subscribe to activity feed messages
+    room.onMessage('activity', (message) => {
+      addActivityMessage(message);
+    });
+
+    // Listen for game started event
+    room.onMessage('gameStarted', (message) => {
+      onGameStarted(message);
+    });
+
+    // Listen for host changed event
+    room.onMessage('hostChanged', (message) => {
+      onHostChanged(message);
+    });
 
     // Monitor network traffic
     room.onMessage('*', (type, message) => {
@@ -405,6 +438,27 @@ async function connect(roomName, create = false) {
     room.state.onChange = () => {
       // Update player count
       playerCountEl.textContent = room.state.players ? room.state.players.size : 0;
+      
+      // Update panel player count
+      updatePanelDisplay();
+
+      // Update host and game started status
+      if (room.state.hostSessionId) {
+        roomHostId = room.state.hostSessionId;
+        isHost = (room.state.hostSessionId === mySessionId);
+      }
+      
+      // Check if game started status changed
+      if (room.state.gameStarted && !gameStarted) {
+        gameStarted = true;
+        hideWaitingRoom();
+        statusEl.textContent = 'Game started! Kill the bots!';
+      }
+
+      // Update waiting room UI if game hasn't started
+      if (!gameStarted) {
+        updateWaitingRoomUI();
+      }
 
       // Update level display
       if (room.state.currentLevel !== undefined && room.state.totalLevels !== undefined) {
@@ -414,6 +468,7 @@ async function connect(roomName, create = false) {
 
       // Update kill progress
       if (room.state.currentLevelKills !== undefined && room.state.killsNeededForNextLevel !== undefined) {
+        console.log('🎯 Kill progress update:', room.state.currentLevelKills, '/', room.state.killsNeededForNextLevel);
         levelKillsEl.textContent = room.state.currentLevelKills;
         killsNeededEl.textContent = room.state.killsNeededForNextLevel;
       }
@@ -424,6 +479,9 @@ async function connect(roomName, create = false) {
         playerLivesEl.textContent = myPlayer.lives;
       }
 
+      // Update player list in panel
+      updatePlayersList();
+
       messagesReceived++;
     };
 
@@ -433,6 +491,24 @@ async function connect(roomName, create = false) {
 
       dungeonWidth = state.width;
       dungeonHeight = state.height;
+      
+      // Set host status from server state
+      roomHostId = state.hostSessionId;
+      isHost = (state.hostSessionId === mySessionId);
+      gameStarted = state.gameStarted;
+      
+      console.log('👑 Host:', roomHostId, 'Is me:', isHost, 'Game started:', gameStarted);
+      
+      // Show waiting room if game hasn't started yet
+      if (!gameStarted) {
+        showWaitingRoom();
+        statusEl.textContent = isHost ? 'You are the host! Click START GAME when ready.' : 'Waiting for host to start...';
+      } else {
+        hideWaitingRoom();
+        statusEl.textContent = 'Game in progress! Kill the bots!';
+      }
+      
+      updatePanelDisplay();
 
       // Set up bullet tracking for debugging
       if (state.bullets) {
@@ -468,6 +544,33 @@ async function connect(roomName, create = false) {
         };
 
         console.log('🤖 Bots in state:', state.bots.size);
+        
+        // Bots start at 0 before game starts - this is expected
+        if (state.bots.size === 0 && state.gameStarted) {
+          console.warn('⚠️ WARNING: No bots but game started! Check server logs.');
+        }
+      }
+
+      // Set up player tracking for player list updates
+      if (state.players) {
+        state.players.onAdd = (player, sessionId) => {
+          console.log('👤 Player added:', player.name, sessionId);
+          updatePlayersList();
+          updateWaitingPlayersList();
+        };
+
+        state.players.onRemove = (player, sessionId) => {
+          console.log('👋 Player removed:', player.name, sessionId);
+          updatePlayersList();
+          updateWaitingPlayersList();
+        };
+
+        // Listen for player changes (lives, score, etc.)
+        state.players.onChange = (player, sessionId) => {
+          updatePlayersList();
+        };
+
+        console.log('👥 Players in state:', state.players.size);
       }
 
       // Set up transport tracking if available
@@ -628,6 +731,15 @@ async function connect(roomName, create = false) {
       botPaths = message;
     });
 
+    // Setup debug panel event listeners
+    document.getElementById('showBotPaths').addEventListener('change', (e) => {
+      debugConfig.showBotPaths = e.target.checked;
+    });
+
+    document.getElementById('showBotStats').addEventListener('change', (e) => {
+      debugConfig.showBotStats = e.target.checked;
+    });
+
     // Update render on any state change
     room.onStateChange(() => {
       render();
@@ -637,6 +749,36 @@ async function connect(roomName, create = false) {
     console.error('Failed to connect:', e);
     statusEl.textContent = 'Connection failed!';
   }
+}
+
+// Update debug panel bot statistics
+function updateDebugPanel() {
+  if (!debugConfig.panelOpen || !room || !room.state) return;
+  
+  const container = document.getElementById('botStatsContainer');
+  
+  if (room.state.bots.size === 0) {
+    container.innerHTML = '<div class="bot-stat-placeholder">No bots spawned yet</div>';
+    return;
+  }
+  
+  container.innerHTML = '';
+  
+  room.state.bots.forEach((bot, botId) => {
+    const path = botPaths[botId];
+    const pathLength = path ? path.length : 0;
+    const status = pathLength === 0 ? '❌ No Path' : '✅ Moving';
+    const healthPercent = Math.round((bot.health / bot.maxHealth) * 100);
+    
+    const botStat = document.createElement('div');
+    botStat.className = 'bot-stat-item';
+    botStat.innerHTML = `
+      <strong>${botId.slice(0, 10)}</strong><br>
+      ${status} (${pathLength} waypoints)<br>
+      Health: ${healthPercent}%
+    `;
+    container.appendChild(botStat);
+  });
 }
 
 // Render the game
@@ -754,58 +896,60 @@ function render() {
     return true; // Keep animation
   });
 
-  // Draw bot paths (debugging visualization)
-  Object.keys(botPaths).forEach((botId) => {
-    const path = botPaths[botId];
-    const bot = room.state.bots.get(botId);
-    
-    if (!path || path.length === 0 || !bot) return;
-    
-    // Draw path as a line with waypoint markers
-    ctx.globalAlpha = 0.5;
-    ctx.strokeStyle = '#00ffff';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]); // Dashed line
-    
-    ctx.beginPath();
-    
-    // Start from bot's current position
-    const pos = getInterpolatedBotPosition(bot);
-    let startScreenX = (pos.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
-    let startScreenY = (pos.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
-    ctx.moveTo(startScreenX, startScreenY);
-    
-    // Draw line through all waypoints
-    path.forEach((waypoint) => {
-      const waypointScreenX = (waypoint.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
-      const waypointScreenY = (waypoint.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
-      ctx.lineTo(waypointScreenX, waypointScreenY);
-    });
-    
-    ctx.stroke();
-    ctx.setLineDash([]); // Reset to solid line
-    
-    // Draw waypoint markers
-    path.forEach((waypoint, index) => {
-      const waypointScreenX = (waypoint.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
-      const waypointScreenY = (waypoint.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
+  // Draw bot paths (debugging visualization) - only if enabled
+  if (debugConfig.showBotPaths) {
+    Object.keys(botPaths).forEach((botId) => {
+      const path = botPaths[botId];
+      const bot = room.state.bots.get(botId);
       
-      // Draw small circles for waypoints
-      ctx.fillStyle = '#00ffff';
+      if (!path || path.length === 0 || !bot) return;
+      
+      // Draw path as a line with waypoint markers
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = '#00ffff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]); // Dashed line
+      
       ctx.beginPath();
-      ctx.arc(waypointScreenX, waypointScreenY, 3, 0, Math.PI * 2);
-      ctx.fill();
       
-      // Draw waypoint number for first few waypoints
-      if (index < 5) {
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '10px monospace';
-        ctx.fillText((index + 1).toString(), waypointScreenX + 5, waypointScreenY - 5);
-      }
+      // Start from bot's current position
+      const pos = getInterpolatedBotPosition(bot);
+      let startScreenX = (pos.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
+      let startScreenY = (pos.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
+      ctx.moveTo(startScreenX, startScreenY);
+      
+      // Draw line through all waypoints
+      path.forEach((waypoint) => {
+        const waypointScreenX = (waypoint.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
+        const waypointScreenY = (waypoint.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
+        ctx.lineTo(waypointScreenX, waypointScreenY);
+      });
+      
+      ctx.stroke();
+      ctx.setLineDash([]); // Reset to solid line
+      
+      // Draw waypoint markers
+      path.forEach((waypoint, index) => {
+        const waypointScreenX = (waypoint.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
+        const waypointScreenY = (waypoint.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
+        
+        // Draw small circles for waypoints
+        ctx.fillStyle = '#00ffff';
+        ctx.beginPath();
+        ctx.arc(waypointScreenX, waypointScreenY, 3, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Draw waypoint number for first few waypoints
+        if (index < 5) {
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '10px monospace';
+          ctx.fillText((index + 1).toString(), waypointScreenX + 5, waypointScreenY - 5);
+        }
+      });
+      
+      ctx.globalAlpha = 1.0;
     });
-    
-    ctx.globalAlpha = 1.0;
-  });
+  }
 
   // Draw bots with health bars (using interpolation for smooth movement)
   room.state.bots.forEach((bot) => {
@@ -847,6 +991,17 @@ function render() {
       // Health (green to red gradient)
       ctx.fillStyle = healthPercent > 0.5 ? '#00ff00' : healthPercent > 0.25 ? '#ffff00' : '#ff0000';
       ctx.fillRect(screenX + (TILE_SIZE - barWidth) / 2, screenY - 6, barWidth * healthPercent, barHeight);
+
+      // Draw bot debug stats overlay (if enabled)
+      if (debugConfig.showBotStats) {
+        const path = botPaths[bot.id];
+        const pathLength = path ? path.length : 0;
+        const status = pathLength === 0 ? '❌' : '✅';
+        
+        ctx.fillStyle = '#00ffff';
+        ctx.font = '10px monospace';
+        ctx.fillText(`${status} Path: ${pathLength}`, screenX, screenY - 15);
+      }
     }
   });
 
@@ -971,6 +1126,9 @@ function render() {
       }
     }
   });
+
+  // Update debug panel stats
+  updateDebugPanel();
 }
 
 // Handle keyboard input
@@ -997,6 +1155,7 @@ document.addEventListener('keydown', (e) => {
 
   // Shoot with spacebar
   if (e.key === ' ' || e.key === 'Spacebar') {
+    console.log('🔫 Shooting bullet at angle:', myPlayer.angle.toFixed(2));
     room.send('shoot', { angle: myPlayer.angle });
     e.preventDefault();
     return;
@@ -1067,33 +1226,54 @@ window.showStats = function() {
 
 console.log(`\n💡 TIP: Type showStats() in the console to see network and memory usage!\n`);
 
-// Start modal functions
-window.createGame = function() {
-  const roomName = document.getElementById('roomName').value.trim() || undefined;
-  document.getElementById('startModal').classList.add('hidden');
-  connect(roomName, true);
-};
-
-window.joinGame = function() {
-  const roomName = document.getElementById('roomName').value.trim();
-  if (!roomName) {
-    alert('Please enter a room name to join');
+// Auto-connect to room from sessionStorage (coming from lobby page)
+async function autoConnectFromLobby() {
+  const roomId = sessionStorage.getItem('roomId');
+  const roomName = sessionStorage.getItem('roomName');
+  const playerName = sessionStorage.getItem('playerName');
+  const isNewRoom = sessionStorage.getItem('isNewRoom') === 'true';
+  
+  // Clear session storage
+  sessionStorage.removeItem('roomId');
+  sessionStorage.removeItem('roomName');
+  sessionStorage.removeItem('playerName');
+  sessionStorage.removeItem('isNewRoom');
+  
+  // Need either roomId (to join) or roomName (to create)
+  if (!playerName || (!roomId && !roomName)) {
+    console.error('Missing room connection info, redirecting to lobby...');
+    returnToLobby();
     return;
   }
-  document.getElementById('startModal').classList.add('hidden');
-  connect(roomName, false);
-};
+  
+  try {
+    if (isNewRoom && roomName) {
+      // Create a new room
+      console.log('Creating new room:', roomName, 'as', playerName);
+      await connect(roomName, true, playerName);
+    } else if (roomId) {
+      // Join existing room by ID
+      console.log('Joining room:', roomId, 'as', playerName);
+      await connect(roomId, false, playerName);
+    } else {
+      console.error('Invalid room configuration');
+      returnToLobby();
+    }
+  } catch (error) {
+    console.error('Failed to connect to room:', error);
+    alert('Failed to connect to room. Returning to lobby.');
+    returnToLobby();
+  }
+}
 
-// Restart game function
-window.restartGame = function() {
-  const gameOverModal = document.getElementById('gameOverModal');
-  gameOverModal.classList.add('hidden');
-
+// Return to lobby function
+window.returnToLobby = function() {
   // Disconnect from current room if connected
   if (room) {
     room.leave();
     room = null;
     mySessionId = null;
+    roomHostId = null;
   }
 
   // Reset game state
@@ -1102,17 +1282,354 @@ window.restartGame = function() {
   teleportAnimations = [];
   muzzleFlashes = [];
   damageEffects = [];
+  botPaths = {};
+  isHost = false;
+  gameStarted = false;
 
-  // Show start modal again
-  const startModal = document.getElementById('startModal');
-  startModal.classList.remove('hidden');
-
-  // Reset status
-  statusEl.textContent = 'Ready to start!';
+  // Redirect to lobby (index.html)
+  window.location.href = '/';
 };
 
-// Don't auto-connect anymore - wait for modal
-// connect();
+// ==========================================
+// WAITING ROOM FUNCTIONS
+// ==========================================
+
+// Show the waiting room overlay
+function showWaitingRoom() {
+  document.getElementById('waitingRoomOverlay').classList.remove('hidden');
+  updateWaitingRoomUI();
+}
+
+// Hide the waiting room overlay
+function hideWaitingRoom() {
+  document.getElementById('waitingRoomOverlay').classList.add('hidden');
+}
+
+// Update the waiting room UI based on current state
+function updateWaitingRoomUI() {
+  if (!room || !room.state) return;
+
+  // Update room name
+  const roomName = room.state.roomName || 'Unnamed Room';
+  document.getElementById('waitingRoomName').textContent = roomName;
+
+  // Update player count
+  const playerCount = room.state.players ? room.state.players.size : 0;
+  document.getElementById('waitingPlayerCount').textContent = playerCount;
+
+  // Update player list
+  updateWaitingPlayersList();
+
+  // Show/hide host controls vs waiting message
+  const hostControls = document.getElementById('hostControls');
+  const waitingMessage = document.getElementById('waitingMessage');
+
+  if (isHost) {
+    hostControls.classList.remove('hidden');
+    waitingMessage.classList.add('hidden');
+  } else {
+    hostControls.classList.add('hidden');
+    waitingMessage.classList.remove('hidden');
+  }
+}
+
+// Update the player list in the waiting room
+function updateWaitingPlayersList() {
+  if (!room || !room.state || !room.state.players) return;
+
+  const container = document.getElementById('waitingPlayersList');
+  
+  if (room.state.players.size === 0) {
+    container.innerHTML = '<div style="color: #666; font-style: italic;">Waiting for players...</div>';
+    return;
+  }
+
+  let html = '';
+  room.state.players.forEach((player, sessionId) => {
+    const isYou = sessionId === mySessionId;
+    const isPlayerHost = sessionId === room.state.hostSessionId;
+    
+    let classes = 'waiting-player-item';
+    let badges = '';
+    
+    if (isPlayerHost) {
+      badges += '<span class="waiting-player-host">★ Host</span> ';
+    }
+    if (isYou) {
+      badges += '<span class="waiting-player-you">(You)</span>';
+    }
+
+    html += `
+      <div class="${classes}">
+        ${player.name || 'Unknown'} ${badges}
+      </div>
+    `;
+  });
+
+  container.innerHTML = html;
+}
+
+// Start the game (only host can call this)
+window.startGame = function() {
+  if (!room || !isHost) {
+    console.log('Cannot start game: not host or not connected');
+    return;
+  }
+
+  console.log('🎮 Starting game...');
+  room.send('startGame', {});
+};
+
+// Handle game started event
+function onGameStarted(message) {
+  console.log('🎮 Game started!', message);
+  gameStarted = true;
+  hideWaitingRoom();
+  statusEl.textContent = `Game started! Kill ${room.state.killsNeededForNextLevel} bots!`;
+}
+
+// Handle host changed event
+function onHostChanged(message) {
+  console.log('👑 Host changed:', message);
+  roomHostId = message.newHostId;
+  isHost = (message.newHostId === mySessionId);
+  
+  if (isHost) {
+    statusEl.textContent = 'You are now the host! Click START GAME when ready.';
+  }
+  
+  updateWaitingRoomUI();
+}
+
+// Toggle debug panel
+window.toggleDebugPanel = function() {
+  debugConfig.panelOpen = !debugConfig.panelOpen;
+  const panel = document.getElementById('debugPanel');
+  
+  if (debugConfig.panelOpen) {
+    panel.classList.remove('hidden');
+    document.body.classList.add('debug-open');
+  } else {
+    panel.classList.add('hidden');
+    document.body.classList.remove('debug-open');
+  }
+};
+
+// Check for room parameter in URL and pre-fill modal
+function checkForRoomParameter() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const roomParam = urlParams.get('room');
+  
+  if (roomParam) {
+    console.log('🔗 Room link detected:', roomParam);
+    // Pre-fill the room name input
+    document.getElementById('roomName').value = roomParam;
+    
+    // Show custom message in modal
+    const modalTitle = document.querySelector('.modal-title');
+    modalTitle.textContent = 'JOIN SHARED ROOM';
+    
+    // Add info message
+    const modalContent = document.querySelector('.modal-content');
+    const infoDiv = document.createElement('div');
+    infoDiv.style.cssText = 'margin: 10px 0; padding: 10px; background: rgba(0, 255, 0, 0.1); border: 1px solid #00ff00; border-radius: 5px; font-size: 14px;';
+    infoDiv.innerHTML = `<strong>Room ID:</strong> ${roomParam}<br>Click "Join Game" to connect!`;
+    modalContent.insertBefore(infoDiv, modalContent.querySelector('.input-group'));
+    
+    // Auto-focus the Join Game button
+    setTimeout(() => {
+      const joinBtn = document.querySelector('.button-group button:last-child');
+      if (joinBtn) joinBtn.focus();
+    }, 100);
+  }
+}
+
+// Copy room link to clipboard
+window.copyRoomLink = function() {
+  if (!room || !room.roomId) {
+    alert('Not connected to a room yet!');
+    return;
+  }
+
+  // Room link goes to lobby page with room parameter
+  const roomLink = `${window.location.origin}/?join=${room.roomId}`;
+  
+  // Modern clipboard API
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(roomLink)
+      .then(() => {
+        showCopySuccess();
+      })
+      .catch(err => {
+        console.error('Failed to copy:', err);
+        fallbackCopyToClipboard(roomLink);
+      });
+  } else {
+    // Fallback for older browsers
+    fallbackCopyToClipboard(roomLink);
+  }
+};
+
+// Show success message
+function showCopySuccess() {
+  const status = document.getElementById('copyLinkStatus');
+  const btn = document.getElementById('copyRoomLinkBtn');
+  
+  status.style.display = 'block';
+  btn.textContent = '✓ Copied!';
+  
+  setTimeout(() => {
+    status.style.display = 'none';
+    btn.textContent = '📋 Copy Room Link';
+  }, 2000);
+}
+
+// Fallback copy method for older browsers
+function fallbackCopyToClipboard(text) {
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-999999px';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  
+  try {
+    const successful = document.execCommand('copy');
+    if (successful) {
+      showCopySuccess();
+    } else {
+      alert('Failed to copy. Please copy manually: ' + text);
+    }
+  } catch (err) {
+    alert('Failed to copy. Please copy manually: ' + text);
+  }
+  
+  document.body.removeChild(textArea);
+}
+
+// Leave room function
+window.leaveRoom = function() {
+  if (!room) {
+    alert('Not connected to a room!');
+    return;
+  }
+
+  if (confirm('Are you sure you want to leave this room?')) {
+    returnToLobby();
+  }
+};
+
+// Update panel display when connected
+function updatePanelDisplay() {
+  if (!room || !room.state) return;
+
+  // Update room name
+  const roomName = room.state.roomName || 'Unnamed Room';
+  document.getElementById('panelRoomName').textContent = roomName;
+
+  // Update room ID
+  document.getElementById('panelRoomId').textContent = room.roomId || 'Unknown';
+  
+  // Update player count
+  const playerCount = room.state.players ? room.state.players.size : 0;
+  document.getElementById('panelPlayerCount').textContent = playerCount;
+  document.getElementById('panelPlayersCount').textContent = playerCount;
+  
+  // Update host display
+  if (roomHostId && room.state.players) {
+    const hostPlayer = room.state.players.get(roomHostId);
+    if (hostPlayer) {
+      const isHost = roomHostId === mySessionId;
+      const hostDisplay = isHost ? 'You' : hostPlayer.name;
+      document.getElementById('panelRoomHost').textContent = hostDisplay;
+    }
+  }
+  
+  // Update players list
+  updatePlayersList();
+  
+  // Enable buttons
+  document.getElementById('copyRoomLinkBtn').disabled = false;
+  document.getElementById('leaveRoomBtn').disabled = false;
+}
+
+// Update players list in panel
+function updatePlayersList() {
+  if (!room || !room.state || !room.state.players) return;
+
+  const container = document.getElementById('playersList');
+  
+  if (room.state.players.size === 0) {
+    container.innerHTML = '<div style="color: #666; font-style: italic;">No players yet</div>';
+    return;
+  }
+
+  let html = '';
+  room.state.players.forEach((player, sessionId) => {
+    const isYou = sessionId === mySessionId;
+    const isHost = sessionId === roomHostId;
+    
+    html += `
+      <div class="player-card">
+        <div class="player-card-header">
+          ${player.name || 'Unknown'} ${isYou ? '(You)' : ''} ${isHost ? '⭐' : ''}
+        </div>
+        <div class="player-card-stats">
+          Lives: ${'♥'.repeat(player.lives || 0)}<br>
+          Kills: ${player.score || 0}
+        </div>
+      </div>
+    `;
+  });
+
+  container.innerHTML = html;
+}
+
+// Activity feed management
+const activityMessages = [];
+const MAX_ACTIVITY_MESSAGES = 10;
+
+function addActivityMessage(message) {
+  const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  
+  activityMessages.unshift({
+    time: timestamp,
+    text: message.text,
+    type: message.type || 'default'
+  });
+
+  // Keep only last 10 messages
+  if (activityMessages.length > MAX_ACTIVITY_MESSAGES) {
+    activityMessages.pop();
+  }
+
+  updateActivityFeed();
+}
+
+function updateActivityFeed() {
+  const container = document.getElementById('activityFeed');
+  
+  if (activityMessages.length === 0) {
+    container.innerHTML = '<div style="color: #666; font-style: italic;">No activity yet</div>';
+    return;
+  }
+
+  const html = activityMessages.map(msg => `
+    <div class="activity-message">
+      <span class="activity-time">[${msg.time}]</span>
+      <span class="activity-${msg.type}">${msg.text}</span>
+    </div>
+  `).join('');
+
+  container.innerHTML = html;
+  
+  // Auto-scroll to top (newest message)
+  container.scrollTop = 0;
+}
+
+// Auto-connect when page loads (if coming from lobby)
+autoConnectFromLobby();
 
 // Render loop
 setInterval(render, 1000 / 30); // 30 FPS

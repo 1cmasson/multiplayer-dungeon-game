@@ -42,6 +42,13 @@ export enum TileType {
   TRANSPORT_INACTIVE = 5, // Blue tile after transport is used
 }
 
+export interface SpawnZone {
+  x: number;
+  y: number;
+  radius: number;
+  direction: 'north' | 'south' | 'east' | 'west'; // Relative to spawn point
+}
+
 export interface DungeonData {
   grid: number[][];
   rooms: Room[];
@@ -50,6 +57,7 @@ export interface DungeonData {
   spawnPoint: { x: number; y: number };
   exitPoint: { x: number; y: number };
   transportPoints: Array<{ x: number; y: number }>; // Active transport locations
+  spawnZones: SpawnZone[]; // Bot spawn zones distributed around the map
 }
 
 export class DungeonGenerator {
@@ -60,7 +68,7 @@ export class DungeonGenerator {
   private rng: SeededRandom;
   public readonly seed: number;
 
-  constructor(width: number = 50, height: number = 50, seed?: number) {
+  constructor(width: number = 120, height: number = 120, seed?: number) {
     this.width = width;
     this.height = height;
     this.seed = seed ?? Date.now();
@@ -107,9 +115,9 @@ export class DungeonGenerator {
     const startX = Math.min(x1, x2);
     const endX = Math.max(x1, x2);
 
-    // Make corridor 2 tiles wide
+    // Make corridor 4 tiles wide for better multiplayer navigation
     for (let x = startX; x <= endX; x++) {
-      for (let offset = 0; offset < 2; offset++) {
+      for (let offset = 0; offset < 4; offset++) {
         const corridorY = y + offset;
         if (corridorY >= 0 && corridorY < this.height && x >= 0 && x < this.width) {
           this.grid[corridorY][x] = TileType.FLOOR;
@@ -122,9 +130,9 @@ export class DungeonGenerator {
     const startY = Math.min(y1, y2);
     const endY = Math.max(y1, y2);
 
-    // Make corridor 2 tiles wide
+    // Make corridor 4 tiles wide for better multiplayer navigation
     for (let y = startY; y <= endY; y++) {
-      for (let offset = 0; offset < 2; offset++) {
+      for (let offset = 0; offset < 4; offset++) {
         const corridorX = x + offset;
         if (y >= 0 && y < this.height && corridorX >= 0 && corridorX < this.width) {
           this.grid[y][corridorX] = TileType.FLOOR;
@@ -208,7 +216,7 @@ export class DungeonGenerator {
    */
   private placeTransports(spawnX: number, spawnY: number, exitX: number, exitY: number): Array<{ x: number; y: number }> {
     const transports: Array<{ x: number; y: number }> = [];
-    const NUM_TRANSPORTS = 3;
+    const NUM_TRANSPORTS = 5; // More transports for larger map
     let attempts = 0;
     const maxAttempts = 100;
 
@@ -238,14 +246,81 @@ export class DungeonGenerator {
     return transports;
   }
 
+  /**
+   * Create spawn zones distributed in 4 cardinal directions from spawn point
+   * This prevents camping by spawning bots from different angles
+   */
+  private createSpawnZones(spawnX: number, spawnY: number): SpawnZone[] {
+    const zones: SpawnZone[] = [];
+    const MIN_DISTANCE = 20; // Farther for larger 120x120 map
+    const ZONE_RADIUS = 10; // Larger zones for more spawn options
+    
+    // Try to place zones in each cardinal direction
+    const directions: Array<{ dx: number; dy: number; dir: SpawnZone['direction'] }> = [
+      { dx: 0, dy: -1, dir: 'north' },
+      { dx: 0, dy: 1, dir: 'south' },
+      { dx: -1, dy: 0, dir: 'west' },
+      { dx: 1, dy: 0, dir: 'east' },
+    ];
+
+    for (const { dx, dy, dir } of directions) {
+      let bestZone: { x: number; y: number } | null = null;
+      let bestWalkableCount = 0;
+
+      // Try to find a good zone location in this direction
+      for (let distance = MIN_DISTANCE; distance < MIN_DISTANCE + 20; distance += 2) {
+        const centerX = Math.floor(spawnX + dx * distance);
+        const centerY = Math.floor(spawnY + dy * distance);
+
+        // Check if center is in bounds
+        if (centerX < 0 || centerX >= this.width || centerY < 0 || centerY >= this.height) {
+          continue;
+        }
+
+        // Count walkable tiles around this point
+        let walkableCount = 0;
+        for (let ry = -ZONE_RADIUS; ry <= ZONE_RADIUS; ry++) {
+          for (let rx = -ZONE_RADIUS; rx <= ZONE_RADIUS; rx++) {
+            const x = centerX + rx;
+            const y = centerY + ry;
+            
+            if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
+              if (this.grid[y][x] === TileType.FLOOR || this.grid[y][x] === TileType.SPAWN) {
+                walkableCount++;
+              }
+            }
+          }
+        }
+
+        // Keep the location with most walkable tiles
+        if (walkableCount > bestWalkableCount) {
+          bestWalkableCount = walkableCount;
+          bestZone = { x: centerX, y: centerY };
+        }
+      }
+
+      // Add the zone if we found a decent location
+      if (bestZone && bestWalkableCount > 10) {
+        zones.push({
+          x: bestZone.x,
+          y: bestZone.y,
+          radius: ZONE_RADIUS,
+          direction: dir,
+        });
+      }
+    }
+
+    return zones;
+  }
+
   public generate(difficulty: number = 1): DungeonData {
     this.grid = this.createEmptyGrid();
     this.rooms = [];
 
-    // Difficulty affects number of rooms (5-10 rooms)
-    const numRooms = Math.min(5 + difficulty, 10);
-    const minRoomSize = 4;
-    const maxRoomSize = 8;
+    // Difficulty affects number of rooms (8-15 rooms for larger map)
+    const numRooms = Math.min(8 + difficulty, 15);
+    const minRoomSize = 6;  // Larger rooms for 8 players
+    const maxRoomSize = 12;
 
     // Try to place rooms
     let attempts = 0;
@@ -279,8 +354,8 @@ export class DungeonGenerator {
     this.grid[spawnY][spawnX] = TileType.SPAWN;
 
     // Find a suitable exit point that's far from spawn
-    // Minimum distance should be at least 30 tiles for a good journey
-    const MIN_DISTANCE = 30;
+    // Minimum distance should be at least 60 tiles for a good journey on 120x120 map
+    const MIN_DISTANCE = 60;
     let exitRoomIndex = this.rooms.length - 1;
     let exitX = 0;
     let exitY = 0;
@@ -319,6 +394,9 @@ export class DungeonGenerator {
     // Place transport portals (3 invisible teleport spots)
     const transportPoints = this.placeTransports(spawnX, spawnY, exitX, exitY);
 
+    // Create spawn zones for bot spawning
+    const spawnZones = this.createSpawnZones(spawnX, spawnY);
+
     return {
       grid: this.grid,
       rooms: this.rooms,
@@ -327,6 +405,7 @@ export class DungeonGenerator {
       spawnPoint: { x: spawnX, y: spawnY },
       exitPoint: { x: exitX, y: exitY },
       transportPoints: transportPoints,
+      spawnZones: spawnZones,
     };
   }
 }

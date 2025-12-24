@@ -4,6 +4,7 @@ export class Player extends Schema {
   @type("number") x: number = 0;
   @type("number") y: number = 0;
   @type("string") sessionId: string = "";
+  @type("string") name: string = ""; // Player display name
   @type("number") lives: number = 3;
   @type("number") angle: number = 0; // Direction player is facing (for triangle)
   @type("number") score: number = 0; // Kills
@@ -42,9 +43,10 @@ export class DungeonState extends Schema {
   @type({ map: Bot }) bots = new MapSchema<Bot>();
   @type({ map: Bullet }) bullets = new MapSchema<Bullet>();
   @type([Transport]) activeTransports = new ArraySchema<Transport>(); // Active (invisible) transports
+  @type("string") roomName: string = ""; // Optional room display name
   @type("number") seed: number = 0; // Seed for current level's dungeon generation
-  @type("number") width: number = 50;
-  @type("number") height: number = 50;
+  @type("number") width: number = 120;
+  @type("number") height: number = 120;
   @type("number") exitX: number = 0;
   @type("number") exitY: number = 0;
   @type("number") currentLevel: number = 1; // Current level (1-5)
@@ -52,4 +54,6 @@ export class DungeonState extends Schema {
   @type("number") totalKills: number = 0; // Total bots killed across all levels
   @type("number") currentLevelKills: number = 0; // Kills in current level
   @type("number") killsNeededForNextLevel: number = 10; // Dynamic target per level
+  @type("boolean") gameStarted: boolean = false; // Whether the game has started (bots spawn)
+  @type("string") hostSessionId: string = ""; // Session ID of the room host (can start game)
 }

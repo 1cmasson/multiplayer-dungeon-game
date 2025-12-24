@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Multiplayer Dungeon Escape</title>
+  <title>Multiplayer Dungeon Shooter - Lobby</title>
   <style>
     body {
       margin: 0;
@@ -18,55 +18,41 @@
       min-height: 100vh;
     }
 
-    #startModal {
-      position: fixed;
-      top: 0;
-      left: 0;
+    .lobby-container {
+      max-width: 800px;
       width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.95);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-    }
-
-    #startModal.hidden {
-      display: none;
-    }
-
-    #gameOverModal {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.95);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-    }
-
-    #gameOverModal.hidden {
-      display: none;
-    }
-
-    .modal-content {
-      background: #1a1a1a;
-      border: 3px solid #00ff00;
       padding: 40px;
-      border-radius: 10px;
-      box-shadow: 0 0 30px rgba(0, 255, 0, 0.5);
-      text-align: center;
-      max-width: 400px;
-      width: 90%;
     }
 
-    .modal-title {
-      font-size: 32px;
+    .lobby-title {
+      font-size: 48px;
+      text-align: center;
+      margin-bottom: 10px;
+      text-shadow: 0 0 20px #00ff00;
+      letter-spacing: 2px;
+    }
+
+    .lobby-subtitle {
+      text-align: center;
+      color: #00cc00;
+      margin-bottom: 40px;
+      font-size: 14px;
+    }
+
+    .create-room-section {
+      background: rgba(0, 255, 0, 0.05);
+      border: 3px solid #00ff00;
+      border-radius: 10px;
+      padding: 30px;
       margin-bottom: 30px;
-      text-shadow: 0 0 10px #00ff00;
+      box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+    }
+
+    .section-title {
+      font-size: 24px;
+      margin-bottom: 20px;
+      color: #ffff00;
+      text-shadow: 0 0 10px #ffff00;
     }
 
     .input-group {
@@ -76,7 +62,8 @@
     .input-group label {
       display: block;
       margin-bottom: 10px;
-      font-size: 16px;
+      font-size: 14px;
+      color: #00ff00;
     }
 
     .input-group input {
@@ -96,162 +83,204 @@
       box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
     }
 
-    .button-group {
-      display: flex;
-      gap: 10px;
-      margin-top: 30px;
-    }
-
-    .button-group button {
-      flex: 1;
-    }
-
-    h1 {
-      margin: 0 0 20px 0;
-      font-size: 24px;
-      text-shadow: 0 0 10px #00ff00;
-    }
-
-    #gameInfo {
-      margin-bottom: 10px;
-      font-size: 14px;
-    }
-
-    #canvas {
-      border: 2px solid #00ff00;
+    .browse-rooms-section {
+      background: rgba(0, 255, 0, 0.05);
+      border: 3px solid #00ff00;
+      border-radius: 10px;
+      padding: 30px;
       box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
-      image-rendering: pixelated;
-      image-rendering: crisp-edges;
     }
 
-    #controls {
+    .rooms-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .refresh-btn {
+      background: transparent;
+      border: 2px solid #00ff00;
+      color: #00ff00;
+      padding: 8px 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      border-radius: 5px;
+    }
+
+    .refresh-btn:hover {
+      background: #00ff00;
+      color: #1a1a1a;
+    }
+
+    .rooms-list {
+      max-height: 400px;
+      overflow-y: auto;
       margin-top: 20px;
+    }
+
+    .room-item {
+      background: rgba(0, 255, 0, 0.05);
+      border: 2px solid #00ff00;
+      border-radius: 5px;
+      padding: 20px;
+      margin-bottom: 15px;
+      transition: all 0.2s;
+    }
+
+    .room-item:hover {
+      background: rgba(0, 255, 0, 0.1);
+      box-shadow: 0 0 15px rgba(0, 255, 0, 0.3);
+      transform: translateY(-2px);
+    }
+
+    .room-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .room-item-title {
+      font-size: 20px;
+      font-weight: bold;
+      color: #ffff00;
+    }
+
+    .room-item-players {
+      font-size: 14px;
+      color: #00ffff;
+    }
+
+    .room-item-info {
+      font-size: 13px;
+      line-height: 1.8;
+      margin-bottom: 15px;
+      color: #00cc00;
+    }
+
+    .room-item-id {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 10px;
+    }
+
+    .empty-state {
+      color: #666;
+      font-style: italic;
       text-align: center;
+      padding: 60px 20px;
+      font-size: 14px;
     }
 
     button {
       background: #00ff00;
       color: #1a1a1a;
       border: none;
-      padding: 10px 20px;
+      padding: 12px 24px;
       font-family: 'Courier New', monospace;
       font-size: 14px;
       font-weight: bold;
       cursor: pointer;
-      margin: 5px;
+      border-radius: 5px;
       box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+      transition: all 0.2s;
     }
 
     button:hover {
       background: #00cc00;
+      transform: translateY(-2px);
     }
 
     button:active {
-      transform: translateY(2px);
+      transform: translateY(0);
     }
 
-    #status {
-      margin-top: 10px;
+    button:disabled {
+      background: #003300;
+      color: #006600;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .join-btn {
+      width: 100%;
+    }
+
+    .create-btn {
+      width: 100%;
       font-size: 16px;
-      font-weight: bold;
+      padding: 14px;
     }
 
-    .legend {
-      margin-top: 15px;
-      font-size: 12px;
-      text-align: left;
+    /* Scrollbar styling */
+    .rooms-list::-webkit-scrollbar {
+      width: 8px;
     }
 
-    .legend-item {
-      display: inline-block;
-      margin-right: 20px;
+    .rooms-list::-webkit-scrollbar-track {
+      background: #0a0a0a;
+      border-radius: 4px;
     }
 
-    .legend-color {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      margin-right: 5px;
-      vertical-align: middle;
+    .rooms-list::-webkit-scrollbar-thumb {
+      background: #00ff00;
+      border-radius: 4px;
+    }
+
+    .rooms-list::-webkit-scrollbar-thumb:hover {
+      background: #00cc00;
+    }
+
+    .loading-spinner {
+      text-align: center;
+      color: #00ff00;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
     }
   </style>
 </head>
 <body>
-  <!-- Start Modal -->
-  <div id="startModal">
-    <div class="modal-content">
-      <div class="modal-title">DUNGEON SHOOTER</div>
+  <div class="lobby-container">
+    <div class="lobby-title">DUNGEON SHOOTER</div>
+    <div class="lobby-subtitle">Multiplayer Roguelike Action</div>
+
+    <!-- Create Room Section -->
+    <div class="create-room-section">
+      <div class="section-title">Create New Room</div>
+      
+      <div class="input-group">
+        <label for="playerName">Your Name</label>
+        <input type="text" id="playerName" placeholder="Enter your name" />
+      </div>
+
       <div class="input-group">
         <label for="roomName">Room Name (optional)</label>
-        <input type="text" id="roomName" placeholder="Leave empty for random room" />
+        <input type="text" id="roomName" placeholder="My Awesome Game" />
       </div>
-      <div class="button-group">
-        <button onclick="createGame()">Create Game</button>
-        <button onclick="joinGame()">Join Game</button>
+
+      <button class="create-btn" onclick="createGame()">Create Room & Start Playing</button>
+    </div>
+
+    <!-- Browse Rooms Section -->
+    <div class="browse-rooms-section">
+      <div class="rooms-header">
+        <div class="section-title" style="margin-bottom: 0;">Join Existing Room</div>
+        <button class="refresh-btn" onclick="refreshRoomList()">🔄 Refresh</button>
       </div>
-    </div>
-  </div>
 
-  <!-- Game Over Modal -->
-  <div id="gameOverModal" class="hidden">
-    <div class="modal-content">
-      <div class="modal-title">GAME OVER</div>
-      <p style="margin: 20px 0; font-size: 18px;">You ran out of lives!</p>
-      <p style="margin: 20px 0; font-size: 14px;">
-        Level: <span id="finalLevel">1</span> |
-        Kills: <span id="finalKills">0</span>
-      </p>
-      <button onclick="restartGame()" style="width: 100%;">Restart Game</button>
-    </div>
-  </div>
-
-  <h1>MULTIPLAYER DUNGEON SHOOTER</h1>
-
-  <div id="gameInfo">
-    <div>
-      Level: <span id="currentLevel">1</span>/<span id="totalLevels">5</span> |
-      Kills: <span id="levelKills">0</span>/<span id="killsNeeded">10</span> |
-      Lives: <span id="playerLives">3</span> |
-      Players: <span id="playerCount">0</span> |
-      Room: <span id="roomId">-</span>
-    </div>
-  </div>
-
-  <canvas id="canvas"></canvas>
-
-  <div id="controls">
-    <div>WASD/Arrows: Move | Mouse: Aim | Space: Shoot</div>
-    <div id="status">Connecting...</div>
-  </div>
-
-  <div class="legend">
-    <div class="legend-item">
-      <span class="legend-color" style="background: #333;"></span> Wall
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #666;"></span> Floor
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #1a1a1a;"></span> Obstacle
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #4d94ff;"></span> Used Portal
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #0f380f;"></span> You (Triangle)
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #8bac0f;"></span> Other Players
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #ff0000;"></span> Bots (Enemy)
-    </div>
-    <div class="legend-item">
-      <span class="legend-color" style="background: #ffff00;"></span> Bullets
+      <div class="rooms-list" id="roomsList">
+        <div class="loading-spinner">Loading rooms...</div>
+      </div>
     </div>
   </div>
 
   <script src="https://unpkg.com/colyseus.js@^0.16.0/dist/colyseus.js"></script>
-  <script src="game.js"></script>
+  <script src="lobby.js"></script>
 </body>
 </html>

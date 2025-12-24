@@ -18,9 +18,13 @@ export class EnemyBotManager {
   private botLastPathUpdate = new Map<string, number>(); // Timestamp of last path calculation
   private pathfindingQueue: string[] = []; // Queue of bots needing path calculation
   
+  // Spawn zone rotation
+  private lastUsedSpawnZoneIndex = -1; // Track which zone was used last
+  private botRoles = new Map<string, 'attack' | 'flank'>(); // Track bot tactical roles
+  
   // Configuration
-  private readonly PATH_UPDATE_INTERVAL = 1000; // Recalculate paths every 1 second
-  private readonly PLAYER_MOVE_THRESHOLD = 5; // Recalculate if player moves 5+ tiles
+  private readonly PATH_UPDATE_INTERVAL = 800; // Recalculate paths more frequently (was 1000ms, now 800ms)
+  private readonly PLAYER_MOVE_THRESHOLD = 3; // React faster to player movement (was 5, now 3 tiles)
   private readonly STUCK_THRESHOLD = 3; // Consecutive failed moves before recalculating
   private readonly MAX_CONCURRENT_PATHFINDING = 3; // Max bots calculating paths per frame
   private readonly WANDER_DISTANCE = 3; // Distance to wander when no path available
@@ -31,16 +35,150 @@ export class EnemyBotManager {
   ) {}
 
   /**
-   * Spawn bots with safe distance checks
+   * Spawn bots using spawn zones with rotation
    */
   spawnBots(count: number, players: MapSchema<Player>): void {
-    const MIN_SPAWN_DISTANCE = 10; // Bots must spawn at least 10 tiles from spawn point and players
+    const MIN_SPAWN_DISTANCE = 8; // Reduced from 10 to 8 - bots spawn closer
+    const spawnZones = this.dungeonData.spawnZones || [];
+
+    // If no spawn zones available, fall back to random spawning
+    if (spawnZones.length === 0) {
+      this.spawnBotsRandomly(count, players);
+      return;
+    }
 
     for (let i = 0; i < count; i++) {
       const bot = new Bot();
       bot.id = `bot_${this.botIdCounter++}`;
 
-      // Find safe spawn location away from players and spawn point
+      // Rotate to next spawn zone (never use same zone twice in a row)
+      this.lastUsedSpawnZoneIndex = (this.lastUsedSpawnZoneIndex + 1) % spawnZones.length;
+      const selectedZone = spawnZones[this.lastUsedSpawnZoneIndex];
+
+      // Assign tactical role (every 4th bot is a flanker - 25% instead of 33%)
+      const role: 'attack' | 'flank' = i % 4 === 0 ? 'flank' : 'attack';
+      this.botRoles.set(bot.id, role);
+
+      // Find spawn location within the zone
+      let location = null;
+      let attempts = 0;
+      const maxAttempts = 50;
+
+      while (attempts < maxAttempts && !location) {
+        // Random point within zone radius
+        const angle = Math.random() * Math.PI * 2;
+        const distance = Math.random() * selectedZone.radius;
+        const candidate = {
+          x: Math.floor(selectedZone.x + Math.cos(angle) * distance),
+          y: Math.floor(selectedZone.y + Math.sin(angle) * distance),
+        };
+
+        // Check if location is valid
+        if (!this.isValidMove(candidate.x, candidate.y)) {
+          attempts++;
+          continue;
+        }
+
+        // Check distance from all living players
+        let tooCloseToPlayer = false;
+        players.forEach((player) => {
+          if (player.lives > 0) {
+            const distFromPlayer = Math.sqrt(
+              Math.pow(candidate.x - player.x, 2) +
+              Math.pow(candidate.y - player.y, 2)
+            );
+            if (distFromPlayer < MIN_SPAWN_DISTANCE) {
+              tooCloseToPlayer = true;
+            }
+          }
+        });
+
+        if (!tooCloseToPlayer) {
+          location = candidate;
+        }
+
+        attempts++;
+      }
+
+      // If no valid location in zone, try adjacent zones
+      if (!location) {
+        location = this.findLocationInAdjacentZones(spawnZones, players, MIN_SPAWN_DISTANCE);
+      }
+
+      if (location) {
+        bot.x = location.x;
+        bot.y = location.y;
+        bot.targetX = location.x;
+        bot.targetY = location.y;
+        bot.moveStartTime = Date.now();
+
+        // Calculate bot health based on current level
+        bot.maxHealth = this.getBotHealthForLevel(this.state.currentLevel);
+        bot.health = bot.maxHealth;
+
+        this.state.bots.set(bot.id, bot);
+        
+        console.log(`🤖 Spawned ${role} bot ${bot.id} in ${selectedZone.direction} zone at (${bot.x}, ${bot.y})`);
+      }
+    }
+  }
+
+  /**
+   * Try to find spawn location in zones adjacent to the last used zone
+   */
+  private findLocationInAdjacentZones(
+    spawnZones: any[], 
+    players: MapSchema<Player>, 
+    minDistance: number
+  ): { x: number; y: number } | null {
+    // Try all zones except the last used one
+    for (let i = 0; i < spawnZones.length; i++) {
+      if (i === this.lastUsedSpawnZoneIndex) continue;
+
+      const zone = spawnZones[i];
+      
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = Math.random() * zone.radius;
+        const candidate = {
+          x: Math.floor(zone.x + Math.cos(angle) * distance),
+          y: Math.floor(zone.y + Math.sin(angle) * distance),
+        };
+
+        if (!this.isValidMove(candidate.x, candidate.y)) continue;
+
+        let tooCloseToPlayer = false;
+        players.forEach((player) => {
+          if (player.lives > 0) {
+            const dist = Math.sqrt(
+              Math.pow(candidate.x - player.x, 2) +
+              Math.pow(candidate.y - player.y, 2)
+            );
+            if (dist < minDistance) {
+              tooCloseToPlayer = true;
+            }
+          }
+        });
+
+        if (!tooCloseToPlayer) {
+          return candidate;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Fallback: spawn bots randomly (old behavior)
+   */
+  private spawnBotsRandomly(count: number, players: MapSchema<Player>): void {
+    const MIN_SPAWN_DISTANCE = 10;
+
+    for (let i = 0; i < count; i++) {
+      const bot = new Bot();
+      bot.id = `bot_${this.botIdCounter++}`;
+
       let location = null;
       let attempts = 0;
       const maxAttempts = 100;
@@ -82,7 +220,6 @@ export class EnemyBotManager {
       }
 
       if (location) {
-        // Use integer tile positions (not center of tile)
         const tileX = Math.floor(location.x);
         const tileY = Math.floor(location.y);
         
@@ -92,7 +229,6 @@ export class EnemyBotManager {
         bot.targetY = tileY;
         bot.moveStartTime = Date.now();
 
-        // Calculate bot health based on current level
         bot.maxHealth = this.getBotHealthForLevel(this.state.currentLevel);
         bot.health = bot.maxHealth;
 
@@ -124,13 +260,16 @@ export class EnemyBotManager {
       const nearestPlayer = this.findNearestPlayer(bot, players);
       if (!nearestPlayer) return;
 
+      // Determine target based on bot role
+      const targetPosition = this.getTargetPosition(bot, nearestPlayer);
+
       // Check if bot needs path recalculation
       if (this.shouldRecalculatePath(bot, nearestPlayer, currentTime)) {
         this.requestPathCalculation(bot.id);
       }
 
       // Get next tile from path or fallback to direct movement
-      const nextTile = this.getNextTileFromPath(bot, nearestPlayer);
+      const nextTile = this.getNextTileFromPath(bot, targetPosition);
       
       if (nextTile && this.isValidMove(nextTile.x, nextTile.y) && !this.isTileOccupied(nextTile.x, nextTile.y, bot.id)) {
         // Successfully moving - reset stuck counter
@@ -187,6 +326,78 @@ export class EnemyBotManager {
   }
 
   /**
+   * Get target position based on bot's tactical role
+   */
+  private getTargetPosition(bot: Bot, player: Player): { x: number; y: number } {
+    const role = this.botRoles.get(bot.id) || 'attack';
+    const playerX = Math.floor(player.x);
+    const playerY = Math.floor(player.y);
+
+    // Check distance to player
+    const distance = Math.sqrt(
+      Math.pow(bot.x - playerX, 2) + Math.pow(bot.y - playerY, 2)
+    );
+
+    if (role === 'flank' && distance > 3) {
+      // Only flank if we're not already close
+      // Flanking bots try to approach from the side
+      return this.calculateFlankPosition(bot, player);
+    } else {
+      // Attack bots or close flankers go directly at player
+      return { x: playerX, y: playerY };
+    }
+  }
+
+  /**
+   * Calculate a flanking position - try to approach from the side instead of head-on
+   */
+  private calculateFlankPosition(bot: Bot, player: Player): { x: number; y: number } {
+    const playerX = Math.floor(player.x);
+    const playerY = Math.floor(player.y);
+
+    // Calculate angle from bot to player
+    const angleToPlayer = Math.atan2(playerY - bot.y, playerX - bot.x);
+    
+    // Add 90 degrees (perpendicular) to flank from the side
+    // Try both directions and pick the closer one
+    const flankAngle1 = angleToPlayer + Math.PI / 2;
+    const flankAngle2 = angleToPlayer - Math.PI / 2;
+    
+    // Much closer flank distance - just offset by 3-4 tiles to the side
+    const flankDistance = 3;
+    
+    const flank1 = {
+      x: Math.floor(playerX + Math.cos(flankAngle1) * flankDistance),
+      y: Math.floor(playerY + Math.sin(flankAngle1) * flankDistance),
+    };
+    
+    const flank2 = {
+      x: Math.floor(playerX + Math.cos(flankAngle2) * flankDistance),
+      y: Math.floor(playerY + Math.sin(flankAngle2) * flankDistance),
+    };
+    
+    // Pick the flank position that's closer to the bot's current position
+    const dist1 = Math.sqrt(Math.pow(bot.x - flank1.x, 2) + Math.pow(bot.y - flank1.y, 2));
+    const dist2 = Math.sqrt(Math.pow(bot.x - flank2.x, 2) + Math.pow(bot.y - flank2.y, 2));
+    
+    const preferredFlank = dist1 < dist2 ? flank1 : flank2;
+    
+    // Check if flank position is valid
+    if (this.isValidMove(preferredFlank.x, preferredFlank.y)) {
+      return preferredFlank;
+    }
+    
+    // If preferred flank isn't valid, try the other one
+    const alternateFlank = dist1 < dist2 ? flank2 : flank1;
+    if (this.isValidMove(alternateFlank.x, alternateFlank.y)) {
+      return alternateFlank;
+    }
+    
+    // Both flanks blocked - go directly at player
+    return { x: playerX, y: playerY };
+  }
+
+  /**
    * Get next tile to move to (cardinal directions only: up/down/left/right)
    * DEPRECATED: Legacy greedy movement, kept as fallback
    */
@@ -234,7 +445,7 @@ export class EnemyBotManager {
   /**
    * Get next tile from calculated path or fallback to simple movement
    */
-  private getNextTileFromPath(bot: Bot, target: Player): { x: number; y: number } | null {
+  private getNextTileFromPath(bot: Bot, target: { x: number; y: number }): { x: number; y: number } | null {
     const path = this.botPaths.get(bot.id);
     
     // If we have a valid path with waypoints, use it
@@ -258,12 +469,56 @@ export class EnemyBotManager {
     if (Pathfinding.hasLineOfSight(this.dungeonData.grid, 
         { x: bot.x, y: bot.y }, 
         { x: Math.floor(target.x), y: Math.floor(target.y) })) {
-      // Direct line of sight - use simple greedy movement
-      return this.getNextTile(bot, target);
+      // Direct line of sight - use simple greedy movement toward target
+      return this.getNextTileToward(bot, target);
     }
     
     // No path and no line of sight - wander randomly
     return this.getRandomAdjacentTile(bot);
+  }
+
+  /**
+   * Get next tile toward a target position (not necessarily a player)
+   */
+  private getNextTileToward(bot: Bot, target: { x: number; y: number }): { x: number; y: number } | null {
+    const dx = target.x - bot.x;
+    const dy = target.y - bot.y;
+    
+    // Prioritize axis with greater distance
+    if (Math.abs(dx) > Math.abs(dy)) {
+      // Move horizontally first
+      if (dx > 0) {
+        return { x: bot.x + 1, y: bot.y }; // Right
+      } else if (dx < 0) {
+        return { x: bot.x - 1, y: bot.y }; // Left
+      }
+    } else {
+      // Move vertically first
+      if (dy > 0) {
+        return { x: bot.x, y: bot.y + 1 }; // Down
+      } else if (dy < 0) {
+        return { x: bot.x, y: bot.y - 1 }; // Up
+      }
+    }
+    
+    // Fallback: try opposite axis
+    if (Math.abs(dy) > 0) {
+      if (dy > 0) {
+        return { x: bot.x, y: bot.y + 1 }; // Down
+      } else if (dy < 0) {
+        return { x: bot.x, y: bot.y - 1 }; // Up
+      }
+    }
+    
+    if (Math.abs(dx) > 0) {
+      if (dx > 0) {
+        return { x: bot.x + 1, y: bot.y }; // Right
+      } else if (dx < 0) {
+        return { x: bot.x - 1, y: bot.y }; // Left
+      }
+    }
+    
+    return null; // Already at target
   }
 
   /**
@@ -326,11 +581,14 @@ export class EnemyBotManager {
   }
 
   /**
-   * Calculate A* path for bot to target
+   * Calculate A* path for bot to target (considers flanking positions)
    */
   private calculatePath(bot: Bot, target: Player): void {
     const start: Point = { x: Math.floor(bot.x), y: Math.floor(bot.y) };
-    const goal: Point = { x: Math.floor(target.x), y: Math.floor(target.y) };
+    
+    // Get the appropriate target position based on bot role
+    const targetPosition = this.getTargetPosition(bot, target);
+    const goal: Point = { x: Math.floor(targetPosition.x), y: Math.floor(targetPosition.y) };
     
     // Run A* pathfinding
     const path = Pathfinding.findPath(this.dungeonData.grid, start, goal);
@@ -413,6 +671,10 @@ export class EnemyBotManager {
     this.botStuckCounters.clear();
     this.botLastPathUpdate.clear();
     this.pathfindingQueue = [];
+    
+    // Clear spawn zone rotation and roles
+    this.lastUsedSpawnZoneIndex = -1;
+    this.botRoles.clear();
   }
   
   /**
@@ -432,10 +694,11 @@ export class EnemyBotManager {
   }
 
   /**
-   * Get number of bots for level
+   * Get number of bots for level (scaled for 8 players on larger map)
    */
   getBotsForLevel(level: number): number {
-    return 2 + level; // Level 1: 3 bots, Level 5: 7 bots
+    // Level 1: 5 bots, Level 2: 7, Level 3: 9, Level 4: 11, Level 5: 13
+    return 3 + level * 2;
   }
 
 
