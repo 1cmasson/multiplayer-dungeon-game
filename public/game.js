@@ -176,16 +176,29 @@ function handleShootStart(e) {
   const touch = e.changedTouches[0];
   touchState.shootTouch = touch.identifier;
   
-  // Get touch position relative to canvas for aiming
-  const rect = canvas.getBoundingClientRect();
-  const touchX = touch.clientX - rect.left;
-  const touchY = touch.clientY - rect.top;
-  
-  // Calculate angle from player to touch point and shoot
-  shootAtPoint(touchX, touchY);
+  // Shoot in the player's current facing direction (like laptop spacebar)
+  shootInFacingDirection();
   
   // Show shoot indicator
   showShootIndicator(touch.clientX, touch.clientY);
+}
+
+// Shoot in player's current facing direction (for mobile)
+function shootInFacingDirection() {
+  if (!room || !mySessionId) return;
+  
+  const myPlayer = room.state.players.get(mySessionId);
+  if (!myPlayer || myPlayer.lives <= 0) return;
+  
+  // Throttle shooting
+  const now = Date.now();
+  if (now - touchState.lastShootTime < touchState.shootCooldown) return;
+  touchState.lastShootTime = now;
+  
+  // Shoot using the player's current angle (facing direction)
+  room.send('shoot', { angle: myPlayer.angle });
+  
+  console.log('Touch shoot in facing direction, angle:', myPlayer.angle.toFixed(2));
 }
 
 function handleShootEnd(e) {
@@ -299,15 +312,23 @@ function processTouchMovement() {
   const threshold = 0.3;
   
   let direction = null;
+  let angle = null;
   
   if (absX > absY && absX > threshold) {
     direction = touchState.moveDeltaX > 0 ? 'right' : 'left';
+    angle = touchState.moveDeltaX > 0 ? 0 : Math.PI; // 0 = right, PI = left
   } else if (absY > absX && absY > threshold) {
     direction = touchState.moveDeltaY > 0 ? 'down' : 'up';
+    angle = touchState.moveDeltaY > 0 ? Math.PI / 2 : -Math.PI / 2; // PI/2 = down, -PI/2 = up
   }
   
   if (direction) {
     room.send('move', { direction });
+    
+    // Update player's facing angle based on movement direction
+    if (angle !== null) {
+      room.send('updateAngle', { angle });
+    }
   }
 }
 
