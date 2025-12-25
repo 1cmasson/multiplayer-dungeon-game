@@ -15,27 +15,46 @@ let messagesReceived = 0;
 let initialStateSizeBytes = 0;
 
 // ==========================================
-// TOUCH CONTROLS SYSTEM (D-Pad + Tap to Shoot)
+// TOUCH CONTROLS SYSTEM (Floating Joystick + Tap to Shoot)
 // ==========================================
 const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 let touchControlsEnabled = isTouchDevice;
 
-// Touch state tracking
-const touchState = {
-  // Active D-Pad directions (supports multi-touch)
-  activeDirections: new Set(),
+// Joystick state tracking
+const joystickState = {
+  active: false,
+  touchId: null,          // Track which touch is controlling the joystick
+  baseX: 0,               // Center position of joystick base
+  baseY: 0,
+  knobX: 0,               // Current knob position (relative to base center)
+  knobY: 0,
+  angle: 0,               // Current angle in radians
+  distance: 0,            // Distance from center (0-1 normalized)
+  currentDirection: null, // Current discrete direction being sent
   
   // Shooting
   lastShootTime: 0,
-  shootCooldown: 150,  // ms between shots
+  shootCooldown: 150,     // ms between shots
 };
 
-// Direction to angle mapping
+// Joystick configuration
+const JOYSTICK_CONFIG = {
+  baseRadius: 60,         // Radius of the outer circle
+  knobRadius: 25,         // Radius of the inner knob
+  deadzone: 0.15,         // Minimum distance to register input (0-1)
+  moveThrottle: 100,      // ms between movement commands
+};
+
+// Direction to angle mapping (8 directions)
 const DIRECTION_ANGLES = {
-  'up': -Math.PI / 2,
+  'right': 0,
+  'down-right': Math.PI / 4,
   'down': Math.PI / 2,
+  'down-left': 3 * Math.PI / 4,
   'left': Math.PI,
-  'right': 0
+  'up-left': -3 * Math.PI / 4,
+  'up': -Math.PI / 2,
+  'up-right': -Math.PI / 4,
 };
 
 // Initialize touch controls
@@ -43,34 +62,23 @@ function initTouchControls() {
   if (!touchControlsEnabled) return;
   
   const touchControls = document.getElementById('touchControls');
+  const joystickZone = document.getElementById('joystickZone');
+  const joystickBase = document.getElementById('joystickBase');
+  const joystickKnob = document.getElementById('joystickKnob');
   const shootZone = document.getElementById('shootZone');
   
-  if (!touchControls) {
+  if (!touchControls || !joystickZone) {
     console.warn('Touch control elements not found');
     return;
   }
   
   touchControls.classList.add('active');
   
-  // D-Pad button handlers
-  const dpadButtons = {
-    'dpadUp': 'up',
-    'dpadDown': 'down',
-    'dpadLeft': 'left',
-    'dpadRight': 'right'
-  };
-  
-  Object.entries(dpadButtons).forEach(([btnId, direction]) => {
-    const btn = document.getElementById(btnId);
-    if (btn) {
-      btn.addEventListener('touchstart', (e) => handleDpadStart(e, direction), { passive: false });
-      btn.addEventListener('touchend', (e) => handleDpadEnd(e, direction), { passive: false });
-      btn.addEventListener('touchcancel', (e) => handleDpadEnd(e, direction), { passive: false });
-      
-      // Prevent context menu on long press
-      btn.addEventListener('contextmenu', (e) => e.preventDefault());
-    }
-  });
+  // Joystick zone handlers
+  joystickZone.addEventListener('touchstart', handleJoystickStart, { passive: false });
+  joystickZone.addEventListener('touchmove', handleJoystickMove, { passive: false });
+  joystickZone.addEventListener('touchend', handleJoystickEnd, { passive: false });
+  joystickZone.addEventListener('touchcancel', handleJoystickEnd, { passive: false });
   
   // Shoot zone handler
   if (shootZone) {
@@ -83,10 +91,13 @@ function initTouchControls() {
   canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
   canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
   
+  // Prevent context menu on long press
+  joystickZone.addEventListener('contextmenu', (e) => e.preventDefault());
+  
   // Show touch hint briefly
   showTouchHint();
   
-  console.log('D-Pad touch controls initialized');
+  console.log('Floating joystick touch controls initialized');
 }
 
 // Show touch hint for new users
@@ -109,45 +120,187 @@ function showTouchHint() {
   }, 1000);
 }
 
-// D-Pad button handlers
-function handleDpadStart(e, direction) {
+// Joystick touch handlers
+function handleJoystickStart(e) {
   e.preventDefault();
   
-  // Add direction to active set
-  touchState.activeDirections.add(direction);
+  // Only handle if no joystick is active
+  if (joystickState.active) return;
   
-  // Add visual feedback
-  const btn = e.target;
-  btn.classList.add('active');
+  const touch = e.changedTouches[0];
   
-  // Send move command immediately
-  sendMoveCommand(direction);
+  // Store which touch ID is controlling the joystick
+  joystickState.active = true;
+  joystickState.touchId = touch.identifier;
   
-  // Update facing angle
-  const angle = DIRECTION_ANGLES[direction];
-  if (room && angle !== undefined) {
-    room.send('updateAngle', { angle });
+  // Position the joystick base at the touch point
+  joystickState.baseX = touch.clientX;
+  joystickState.baseY = touch.clientY;
+  joystickState.knobX = 0;
+  joystickState.knobY = 0;
+  joystickState.distance = 0;
+  joystickState.currentDirection = null;
+  
+  // Show and position the joystick base
+  const joystickBase = document.getElementById('joystickBase');
+  if (joystickBase) {
+    joystickBase.style.left = joystickState.baseX + 'px';
+    joystickBase.style.top = joystickState.baseY + 'px';
+    joystickBase.classList.add('active');
+  }
+  
+  // Reset knob to center
+  const joystickKnob = document.getElementById('joystickKnob');
+  if (joystickKnob) {
+    joystickKnob.style.transform = 'translate(-50%, -50%)';
+    joystickKnob.classList.remove('moving');
   }
 }
 
-function handleDpadEnd(e, direction) {
+function handleJoystickMove(e) {
   e.preventDefault();
   
-  // Remove direction from active set
-  touchState.activeDirections.delete(direction);
+  if (!joystickState.active) return;
   
-  // Remove visual feedback
-  const btn = e.target;
-  btn.classList.remove('active');
+  // Find the touch that's controlling our joystick
+  let touch = null;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === joystickState.touchId) {
+      touch = e.changedTouches[i];
+      break;
+    }
+  }
+  
+  if (!touch) return;
+  
+  // Calculate offset from base center
+  const deltaX = touch.clientX - joystickState.baseX;
+  const deltaY = touch.clientY - joystickState.baseY;
+  
+  // Calculate distance and angle
+  const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+  const maxDistance = JOYSTICK_CONFIG.baseRadius;
+  
+  // Clamp distance to base radius
+  const clampedDistance = Math.min(distance, maxDistance);
+  const normalizedDistance = clampedDistance / maxDistance;
+  
+  // Calculate clamped position
+  let knobX, knobY;
+  if (distance > 0) {
+    knobX = (deltaX / distance) * clampedDistance;
+    knobY = (deltaY / distance) * clampedDistance;
+  } else {
+    knobX = 0;
+    knobY = 0;
+  }
+  
+  // Update state
+  joystickState.knobX = knobX;
+  joystickState.knobY = knobY;
+  joystickState.distance = normalizedDistance;
+  joystickState.angle = Math.atan2(deltaY, deltaX);
+  
+  // Update knob visual position
+  const joystickKnob = document.getElementById('joystickKnob');
+  if (joystickKnob) {
+    joystickKnob.style.transform = `translate(calc(-50% + ${knobX}px), calc(-50% + ${knobY}px))`;
+    
+    // Add moving class when outside deadzone
+    if (normalizedDistance > JOYSTICK_CONFIG.deadzone) {
+      joystickKnob.classList.add('moving');
+    } else {
+      joystickKnob.classList.remove('moving');
+    }
+  }
+  
+  // Convert to discrete direction if outside deadzone
+  if (normalizedDistance > JOYSTICK_CONFIG.deadzone) {
+    const direction = getDirectionFromAngle(joystickState.angle);
+    
+    // Update player facing angle
+    if (room && direction) {
+      const facingAngle = DIRECTION_ANGLES[direction];
+      if (facingAngle !== undefined) {
+        room.send('updateAngle', { angle: facingAngle });
+      }
+    }
+  }
 }
 
-// Send movement command to server
+function handleJoystickEnd(e) {
+  e.preventDefault();
+  
+  // Check if this is the touch that was controlling the joystick
+  let isOurTouch = false;
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === joystickState.touchId) {
+      isOurTouch = true;
+      break;
+    }
+  }
+  
+  if (!isOurTouch) return;
+  
+  // Reset joystick state
+  joystickState.active = false;
+  joystickState.touchId = null;
+  joystickState.knobX = 0;
+  joystickState.knobY = 0;
+  joystickState.distance = 0;
+  joystickState.currentDirection = null;
+  
+  // Hide joystick base
+  const joystickBase = document.getElementById('joystickBase');
+  if (joystickBase) {
+    joystickBase.classList.remove('active');
+  }
+  
+  // Reset knob position
+  const joystickKnob = document.getElementById('joystickKnob');
+  if (joystickKnob) {
+    joystickKnob.style.transform = 'translate(-50%, -50%)';
+    joystickKnob.classList.remove('moving');
+  }
+}
+
+// Convert joystick angle to 8-way direction
+function getDirectionFromAngle(angle) {
+  // Normalize angle to 0-2PI range
+  let normalizedAngle = angle;
+  if (normalizedAngle < 0) {
+    normalizedAngle += 2 * Math.PI;
+  }
+  
+  // Divide into 8 sectors (each 45 degrees / PI/4 radians)
+  // Offset by 22.5 degrees so that "right" is centered at 0
+  const sectorAngle = Math.PI / 4;
+  const offset = sectorAngle / 2;
+  
+  const sector = Math.floor((normalizedAngle + offset) / sectorAngle) % 8;
+  
+  const directions = [
+    'right',      // 0: -22.5 to 22.5 degrees
+    'down-right', // 1: 22.5 to 67.5 degrees  
+    'down',       // 2: 67.5 to 112.5 degrees
+    'down-left',  // 3: 112.5 to 157.5 degrees
+    'left',       // 4: 157.5 to 202.5 degrees
+    'up-left',    // 5: 202.5 to 247.5 degrees
+    'up',         // 6: 247.5 to 292.5 degrees
+    'up-right',   // 7: 292.5 to 337.5 degrees
+  ];
+  
+  return directions[sector];
+}
+
+// Send movement command to server (supports 8 directions)
 function sendMoveCommand(direction) {
   if (!room || !mySessionId) return;
   
   const myPlayer = room.state.players.get(mySessionId);
   if (!myPlayer || myPlayer.lives <= 0) return;
   
+  // Send the direction directly - server now supports all 8 directions
   room.send('move', { direction });
 }
 
@@ -173,8 +326,8 @@ function shootInFacingDirection() {
   
   // Throttle shooting
   const now = Date.now();
-  if (now - touchState.lastShootTime < touchState.shootCooldown) return;
-  touchState.lastShootTime = now;
+  if (now - joystickState.lastShootTime < joystickState.shootCooldown) return;
+  joystickState.lastShootTime = now;
   
   // Shoot using the player's current angle (facing direction)
   room.send('shoot', { angle: myPlayer.angle });
@@ -198,19 +351,21 @@ function showShootIndicator(x, y) {
   }, 150);
 }
 
-// Process D-Pad movement input (called in game loop)
-function processTouchMovement() {
+// Process joystick movement input (called in game loop)
+function processJoystickMovement() {
   if (!touchControlsEnabled) return;
-  if (touchState.activeDirections.size === 0) return;
+  if (!joystickState.active) return;
+  if (joystickState.distance <= JOYSTICK_CONFIG.deadzone) return;
   if (!room || !mySessionId) return;
   
   const myPlayer = room.state.players.get(mySessionId);
   if (!myPlayer || myPlayer.lives <= 0) return;
   
-  // Send move commands for all active directions
-  touchState.activeDirections.forEach(direction => {
-    room.send('move', { direction });
-  });
+  // Get direction from current joystick angle
+  const direction = getDirectionFromAngle(joystickState.angle);
+  
+  // Send move command
+  sendMoveCommand(direction);
 }
 
 // Touch movement processing interval
@@ -219,10 +374,10 @@ let touchMoveInterval = null;
 function startTouchMoveLoop() {
   if (touchMoveInterval) return;
   
-  // Process touch movement every 100ms (same rate as keyboard repeat)
+  // Process joystick movement every 100ms (same rate as keyboard repeat)
   touchMoveInterval = setInterval(() => {
-    processTouchMovement();
-  }, 100);
+    processJoystickMovement();
+  }, JOYSTICK_CONFIG.moveThrottle);
 }
 
 function stopTouchMoveLoop() {

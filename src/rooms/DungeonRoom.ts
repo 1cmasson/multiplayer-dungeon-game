@@ -65,6 +65,7 @@ export class DungeonRoom extends Room<DungeonState> {
     this.startGameLoop();
 
     // Handle player movement (instant move + auto-rotate)
+    // Supports 8 directions: up, down, left, right, up-right, up-left, down-right, down-left
     this.onMessage("move", (client, message) => {
       const player = this.state.players.get(client.sessionId);
       if (!player) return;
@@ -91,6 +92,27 @@ export class DungeonRoom extends Room<DungeonState> {
         case "right":
           newX += 1;
           player.angle = 0;
+          break;
+        // Diagonal directions
+        case "up-right":
+          newY -= 1;
+          newX += 1;
+          player.angle = -Math.PI / 4;
+          break;
+        case "up-left":
+          newY -= 1;
+          newX -= 1;
+          player.angle = -3 * Math.PI / 4;
+          break;
+        case "down-right":
+          newY += 1;
+          newX += 1;
+          player.angle = Math.PI / 4;
+          break;
+        case "down-left":
+          newY += 1;
+          newX -= 1;
+          player.angle = 3 * Math.PI / 4;
           break;
       }
 
