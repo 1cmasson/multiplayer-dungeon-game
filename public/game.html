@@ -176,64 +176,91 @@
       display: block;
     }
 
-    /* Touch zones - invisible but define interaction areas */
-    .touch-zone {
+    /* D-Pad Container */
+    #dpadControls {
       position: absolute;
-      top: 0;
-      bottom: 0;
+      bottom: 20px;
+      left: 20px;
+      width: 140px;
+      height: 140px;
       pointer-events: auto;
     }
 
-    #moveZone {
-      left: 0;
-      width: 50%;
-    }
-
-    #shootZone {
-      right: 0;
-      width: 50%;
-    }
-
-    /* Visual joystick feedback (appears on touch) */
-    .joystick-visual {
+    /* D-Pad Buttons */
+    .dpad-btn {
       position: absolute;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.15s ease;
-    }
-
-    .joystick-visual.active {
-      opacity: 1;
-    }
-
-    .joystick-base {
-      width: 120px;
-      height: 120px;
-      border-radius: 50%;
-      background: rgba(0, 255, 0, 0.15);
-      border: 2px solid rgba(0, 255, 0, 0.3);
-      position: absolute;
-      transform: translate(-50%, -50%);
-    }
-
-    .joystick-knob {
       width: 50px;
       height: 50px;
-      border-radius: 50%;
-      background: rgba(0, 255, 0, 0.4);
-      border: 2px solid rgba(0, 255, 0, 0.6);
+      background: rgba(0, 255, 0, 0.25);
+      border: 2px solid rgba(0, 255, 0, 0.4);
+      border-radius: 8px;
+      color: rgba(0, 255, 0, 0.6);
+      font-size: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+      transition: all 0.1s ease;
+    }
+
+    .dpad-btn:active,
+    .dpad-btn.active {
+      background: rgba(0, 255, 0, 0.5);
+      border-color: rgba(0, 255, 0, 0.8);
+      color: rgba(0, 255, 0, 1);
+      transform: scale(0.95);
+    }
+
+    #dpadUp {
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    #dpadDown {
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    #dpadLeft {
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    #dpadRight {
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    #dpadUp:active, #dpadUp.active { transform: translateX(-50%) scale(0.95); }
+    #dpadDown:active, #dpadDown.active { transform: translateX(-50%) scale(0.95); }
+    #dpadLeft:active, #dpadLeft.active { transform: translateY(-50%) scale(0.95); }
+    #dpadRight:active, #dpadRight.active { transform: translateY(-50%) scale(0.95); }
+
+    /* Shoot Zone - right half of screen */
+    #shootZone {
       position: absolute;
-      transform: translate(-50%, -50%);
+      top: 0;
+      right: 0;
+      width: 50%;
+      height: 100%;
+      pointer-events: auto;
     }
 
     /* Shoot indicator */
     #shootIndicator {
       position: absolute;
-      width: 60px;
-      height: 60px;
+      width: 80px;
+      height: 80px;
       border-radius: 50%;
-      border: 3px solid rgba(255, 255, 0, 0.6);
-      background: rgba(255, 255, 0, 0.2);
+      border: 3px solid rgba(255, 255, 0, 0.5);
+      background: rgba(255, 255, 0, 0.15);
       transform: translate(-50%, -50%);
       pointer-events: none;
       opacity: 0;
@@ -249,6 +276,7 @@
       0% { transform: translate(-50%, -50%) scale(1); }
       50% { transform: translate(-50%, -50%) scale(1.3); }
       100% { transform: translate(-50%, -50%) scale(1); }
+    }
     }
 
     /* ==========================================
@@ -495,6 +523,52 @@
     .waiting-player-host { color: #ffff00; }
     .waiting-player-you { color: #00ffff; }
 
+    .share-link-section {
+      margin: 20px 0;
+    }
+
+    #waitingCopyLinkBtn {
+      width: 100%;
+      padding: 14px 20px;
+      font-size: 16px;
+      background: #00ffff;
+      color: #1a1a1a;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: bold;
+      transition: all 0.2s ease;
+    }
+
+    #waitingCopyLinkBtn:hover {
+      background: #00dddd;
+      transform: scale(1.02);
+    }
+
+    #waitingCopyLinkBtn:active {
+      transform: scale(0.98);
+    }
+
+    #waitingCopyStatus {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #00ff00;
+      display: none;
+    }
+
+    #waitingCopyStatus.show {
+      display: block;
+      animation: fadeInOut 2s ease-in-out;
+    }
+
+    @keyframes fadeInOut {
+      0% { opacity: 0; }
+      20% { opacity: 1; }
+      80% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
     #startGameBtn {
       width: 100%;
       padding: 15px;
@@ -727,14 +801,16 @@
 
     <!-- Touch Controls Overlay -->
     <div id="touchControls">
-      <div id="moveZone" class="touch-zone"></div>
-      <div id="shootZone" class="touch-zone"></div>
-      
-      <!-- Visual feedback for joystick -->
-      <div id="joystickVisual" class="joystick-visual">
-        <div class="joystick-base"></div>
-        <div class="joystick-knob"></div>
+      <!-- D-Pad Controls -->
+      <div id="dpadControls">
+        <button id="dpadUp" class="dpad-btn">&#9650;</button>
+        <button id="dpadLeft" class="dpad-btn">&#9664;</button>
+        <button id="dpadRight" class="dpad-btn">&#9654;</button>
+        <button id="dpadDown" class="dpad-btn">&#9660;</button>
       </div>
+      
+      <!-- Shoot Zone (right half of screen) -->
+      <div id="shootZone"></div>
       
       <!-- Visual feedback for shooting -->
       <div id="shootIndicator"></div>
@@ -743,8 +819,8 @@
     <!-- Touch Hint (shown once) -->
     <div id="touchHint">
       <h3>Touch Controls</h3>
-      <p>Left side: Drag to move</p>
-      <p>Right side: Tap to shoot</p>
+      <p>Left: D-Pad to move</p>
+      <p>Right: Tap to shoot</p>
     </div>
 
     <!-- Desktop Controls Info -->
@@ -782,6 +858,11 @@
         <div id="waitingPlayersList">
           <div style="color: #666; font-style: italic;">Waiting for players...</div>
         </div>
+      </div>
+      
+      <div class="share-link-section">
+        <button id="waitingCopyLinkBtn" onclick="copyRoomLink()">Copy Invite Link</button>
+        <div id="waitingCopyStatus">Link copied! Share with friends!</div>
       </div>
       
       <div id="hostControls" class="hidden">

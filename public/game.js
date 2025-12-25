@@ -15,58 +15,69 @@ let messagesReceived = 0;
 let initialStateSizeBytes = 0;
 
 // ==========================================
-// TOUCH CONTROLS SYSTEM
+// TOUCH CONTROLS SYSTEM (D-Pad + Tap to Shoot)
 // ==========================================
 const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 let touchControlsEnabled = isTouchDevice;
 
 // Touch state tracking
 const touchState = {
-  // Movement joystick
-  moveTouch: null,        // Active touch for movement
-  moveStartX: 0,          // Where the touch started
-  moveStartY: 0,
-  moveCurrentX: 0,        // Current touch position
-  moveCurrentY: 0,
-  moveDeltaX: 0,          // Normalized direction (-1 to 1)
-  moveDeltaY: 0,
-  isMoving: false,
+  // Active D-Pad directions (supports multi-touch)
+  activeDirections: new Set(),
   
   // Shooting
-  shootTouch: null,       // Active touch for shooting
-  lastShootTime: 0,       // Throttle shooting
-  shootCooldown: 150,     // ms between shots
+  lastShootTime: 0,
+  shootCooldown: 150,  // ms between shots
 };
 
-// Joystick configuration
-const JOYSTICK_DEAD_ZONE = 10;      // Pixels before movement registers
-const JOYSTICK_MAX_DISTANCE = 60;   // Max distance from start point
+// Direction to angle mapping
+const DIRECTION_ANGLES = {
+  'up': -Math.PI / 2,
+  'down': Math.PI / 2,
+  'left': Math.PI,
+  'right': 0
+};
 
 // Initialize touch controls
 function initTouchControls() {
   if (!touchControlsEnabled) return;
   
   const touchControls = document.getElementById('touchControls');
-  const moveZone = document.getElementById('moveZone');
   const shootZone = document.getElementById('shootZone');
   
-  if (!touchControls || !moveZone || !shootZone) {
+  if (!touchControls) {
     console.warn('Touch control elements not found');
     return;
   }
   
   touchControls.classList.add('active');
   
-  // Movement zone handlers
-  moveZone.addEventListener('touchstart', handleMoveStart, { passive: false });
-  moveZone.addEventListener('touchmove', handleMoveMove, { passive: false });
-  moveZone.addEventListener('touchend', handleMoveEnd, { passive: false });
-  moveZone.addEventListener('touchcancel', handleMoveEnd, { passive: false });
+  // D-Pad button handlers
+  const dpadButtons = {
+    'dpadUp': 'up',
+    'dpadDown': 'down',
+    'dpadLeft': 'left',
+    'dpadRight': 'right'
+  };
   
-  // Shoot zone handlers
-  shootZone.addEventListener('touchstart', handleShootStart, { passive: false });
-  shootZone.addEventListener('touchend', handleShootEnd, { passive: false });
-  shootZone.addEventListener('touchcancel', handleShootEnd, { passive: false });
+  Object.entries(dpadButtons).forEach(([btnId, direction]) => {
+    const btn = document.getElementById(btnId);
+    if (btn) {
+      btn.addEventListener('touchstart', (e) => handleDpadStart(e, direction), { passive: false });
+      btn.addEventListener('touchend', (e) => handleDpadEnd(e, direction), { passive: false });
+      btn.addEventListener('touchcancel', (e) => handleDpadEnd(e, direction), { passive: false });
+      
+      // Prevent context menu on long press
+      btn.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+  });
+  
+  // Shoot zone handler
+  if (shootZone) {
+    shootZone.addEventListener('touchstart', handleShootStart, { passive: false });
+    shootZone.addEventListener('touchend', handleShootEnd, { passive: false });
+    shootZone.addEventListener('touchcancel', handleShootEnd, { passive: false });
+  }
   
   // Prevent default touch behaviors on canvas
   canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
@@ -75,7 +86,7 @@ function initTouchControls() {
   // Show touch hint briefly
   showTouchHint();
   
-  console.log('Touch controls initialized');
+  console.log('D-Pad touch controls initialized');
 }
 
 // Show touch hint for new users
@@ -98,75 +109,46 @@ function showTouchHint() {
   }, 1000);
 }
 
-// Movement touch handlers
-function handleMoveStart(e) {
+// D-Pad button handlers
+function handleDpadStart(e, direction) {
   e.preventDefault();
   
-  if (touchState.moveTouch !== null) return; // Already tracking a touch
+  // Add direction to active set
+  touchState.activeDirections.add(direction);
   
-  const touch = e.changedTouches[0];
-  touchState.moveTouch = touch.identifier;
-  touchState.moveStartX = touch.clientX;
-  touchState.moveStartY = touch.clientY;
-  touchState.moveCurrentX = touch.clientX;
-  touchState.moveCurrentY = touch.clientY;
-  touchState.isMoving = false;
+  // Add visual feedback
+  const btn = e.target;
+  btn.classList.add('active');
   
-  // Show joystick visual at touch point
-  showJoystickVisual(touch.clientX, touch.clientY);
-}
-
-function handleMoveMove(e) {
-  e.preventDefault();
+  // Send move command immediately
+  sendMoveCommand(direction);
   
-  // Find our tracked touch
-  for (let i = 0; i < e.changedTouches.length; i++) {
-    const touch = e.changedTouches[i];
-    if (touch.identifier === touchState.moveTouch) {
-      touchState.moveCurrentX = touch.clientX;
-      touchState.moveCurrentY = touch.clientY;
-      
-      // Calculate delta from start position
-      let dx = touchState.moveCurrentX - touchState.moveStartX;
-      let dy = touchState.moveCurrentY - touchState.moveStartY;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      
-      // Apply dead zone
-      if (distance < JOYSTICK_DEAD_ZONE) {
-        touchState.moveDeltaX = 0;
-        touchState.moveDeltaY = 0;
-        touchState.isMoving = false;
-      } else {
-        // Normalize and clamp
-        const clampedDistance = Math.min(distance, JOYSTICK_MAX_DISTANCE);
-        touchState.moveDeltaX = (dx / distance) * (clampedDistance / JOYSTICK_MAX_DISTANCE);
-        touchState.moveDeltaY = (dy / distance) * (clampedDistance / JOYSTICK_MAX_DISTANCE);
-        touchState.isMoving = true;
-      }
-      
-      // Update joystick visual
-      updateJoystickVisual(touchState.moveStartX, touchState.moveStartY, dx, dy);
-      break;
-    }
+  // Update facing angle
+  const angle = DIRECTION_ANGLES[direction];
+  if (room && angle !== undefined) {
+    room.send('updateAngle', { angle });
   }
 }
 
-function handleMoveEnd(e) {
+function handleDpadEnd(e, direction) {
   e.preventDefault();
   
-  for (let i = 0; i < e.changedTouches.length; i++) {
-    const touch = e.changedTouches[i];
-    if (touch.identifier === touchState.moveTouch) {
-      touchState.moveTouch = null;
-      touchState.moveDeltaX = 0;
-      touchState.moveDeltaY = 0;
-      touchState.isMoving = false;
-      
-      // Hide joystick visual
-      hideJoystickVisual();
-      break;
-    }
-  }
+  // Remove direction from active set
+  touchState.activeDirections.delete(direction);
+  
+  // Remove visual feedback
+  const btn = e.target;
+  btn.classList.remove('active');
+}
+
+// Send movement command to server
+function sendMoveCommand(direction) {
+  if (!room || !mySessionId) return;
+  
+  const myPlayer = room.state.players.get(mySessionId);
+  if (!myPlayer || myPlayer.lives <= 0) return;
+  
+  room.send('move', { direction });
 }
 
 // Shoot touch handlers
@@ -174,9 +156,8 @@ function handleShootStart(e) {
   e.preventDefault();
   
   const touch = e.changedTouches[0];
-  touchState.shootTouch = touch.identifier;
   
-  // Shoot in the player's current facing direction (like laptop spacebar)
+  // Shoot in the player's current facing direction
   shootInFacingDirection();
   
   // Show shoot indicator
@@ -197,89 +178,10 @@ function shootInFacingDirection() {
   
   // Shoot using the player's current angle (facing direction)
   room.send('shoot', { angle: myPlayer.angle });
-  
-  console.log('Touch shoot in facing direction, angle:', myPlayer.angle.toFixed(2));
 }
 
 function handleShootEnd(e) {
   e.preventDefault();
-  
-  for (let i = 0; i < e.changedTouches.length; i++) {
-    const touch = e.changedTouches[i];
-    if (touch.identifier === touchState.shootTouch) {
-      touchState.shootTouch = null;
-      break;
-    }
-  }
-}
-
-// Shoot at a specific screen point
-function shootAtPoint(screenX, screenY) {
-  if (!room || !mySessionId) return;
-  
-  const myPlayer = room.state.players.get(mySessionId);
-  if (!myPlayer || myPlayer.lives <= 0) return;
-  
-  // Throttle shooting
-  const now = Date.now();
-  if (now - touchState.lastShootTime < touchState.shootCooldown) return;
-  touchState.lastShootTime = now;
-  
-  // Calculate angle from player position to touch point
-  const playerScreenX = (myPlayer.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
-  const playerScreenY = (myPlayer.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
-  const angle = Math.atan2(screenY - playerScreenY, screenX - playerScreenX);
-  
-  // Update player angle and shoot
-  room.send('updateAngle', { angle });
-  room.send('shoot', { angle });
-  
-  console.log('Touch shoot at angle:', angle.toFixed(2));
-}
-
-// Joystick visual feedback
-function showJoystickVisual(x, y) {
-  const visual = document.getElementById('joystickVisual');
-  if (!visual) return;
-  
-  const base = visual.querySelector('.joystick-base');
-  const knob = visual.querySelector('.joystick-knob');
-  
-  base.style.left = x + 'px';
-  base.style.top = y + 'px';
-  knob.style.left = x + 'px';
-  knob.style.top = y + 'px';
-  
-  visual.classList.add('active');
-}
-
-function updateJoystickVisual(startX, startY, dx, dy) {
-  const visual = document.getElementById('joystickVisual');
-  if (!visual) return;
-  
-  const knob = visual.querySelector('.joystick-knob');
-  
-  // Clamp knob position
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  const clampedDistance = Math.min(distance, JOYSTICK_MAX_DISTANCE);
-  
-  let knobX = startX;
-  let knobY = startY;
-  
-  if (distance > 0) {
-    knobX = startX + (dx / distance) * clampedDistance;
-    knobY = startY + (dy / distance) * clampedDistance;
-  }
-  
-  knob.style.left = knobX + 'px';
-  knob.style.top = knobY + 'px';
-}
-
-function hideJoystickVisual() {
-  const visual = document.getElementById('joystickVisual');
-  if (visual) {
-    visual.classList.remove('active');
-  }
 }
 
 function showShootIndicator(x, y) {
@@ -296,40 +198,19 @@ function showShootIndicator(x, y) {
   }, 150);
 }
 
-// Process touch movement input (called in game loop)
+// Process D-Pad movement input (called in game loop)
 function processTouchMovement() {
-  if (!touchControlsEnabled || !touchState.isMoving) return;
+  if (!touchControlsEnabled) return;
+  if (touchState.activeDirections.size === 0) return;
   if (!room || !mySessionId) return;
   
   const myPlayer = room.state.players.get(mySessionId);
   if (!myPlayer || myPlayer.lives <= 0) return;
   
-  // Determine dominant direction from joystick delta
-  const absX = Math.abs(touchState.moveDeltaX);
-  const absY = Math.abs(touchState.moveDeltaY);
-  
-  // Use threshold to determine if we should move
-  const threshold = 0.3;
-  
-  let direction = null;
-  let angle = null;
-  
-  if (absX > absY && absX > threshold) {
-    direction = touchState.moveDeltaX > 0 ? 'right' : 'left';
-    angle = touchState.moveDeltaX > 0 ? 0 : Math.PI; // 0 = right, PI = left
-  } else if (absY > absX && absY > threshold) {
-    direction = touchState.moveDeltaY > 0 ? 'down' : 'up';
-    angle = touchState.moveDeltaY > 0 ? Math.PI / 2 : -Math.PI / 2; // PI/2 = down, -PI/2 = up
-  }
-  
-  if (direction) {
+  // Send move commands for all active directions
+  touchState.activeDirections.forEach(direction => {
     room.send('move', { direction });
-    
-    // Update player's facing angle based on movement direction
-    if (angle !== null) {
-      room.send('updateAngle', { angle });
-    }
-  }
+  });
 }
 
 // Touch movement processing interval
@@ -1555,32 +1436,35 @@ document.addEventListener('keyup', (e) => {
 });
 
 // Mouse movement for aiming - track mouse position and update player angle
+// Only enable on non-touch devices to prevent conflicts with touch controls
 let lastAngleUpdate = 0;
 const ANGLE_UPDATE_THROTTLE = 50; // Update angle max every 50ms
 
-canvas.addEventListener('mousemove', (e) => {
-  if (!room || !mySessionId) return;
+if (!isTouchDevice) {
+  canvas.addEventListener('mousemove', (e) => {
+    if (!room || !mySessionId) return;
 
-  const myPlayer = room.state.players.get(mySessionId);
-  if (!myPlayer || myPlayer.lives <= 0) return;
+    const myPlayer = room.state.players.get(mySessionId);
+    if (!myPlayer || myPlayer.lives <= 0) return;
 
-  // Throttle angle updates to reduce network traffic
-  const now = Date.now();
-  if (now - lastAngleUpdate < ANGLE_UPDATE_THROTTLE) return;
-  lastAngleUpdate = now;
+    // Throttle angle updates to reduce network traffic
+    const now = Date.now();
+    if (now - lastAngleUpdate < ANGLE_UPDATE_THROTTLE) return;
+    lastAngleUpdate = now;
 
-  const rect = canvas.getBoundingClientRect();
-  const mouseX = e.clientX - rect.left;
-  const mouseY = e.clientY - rect.top;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
-  // Calculate angle from player to mouse
-  const playerScreenX = (myPlayer.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
-  const playerScreenY = (myPlayer.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
-  const angle = Math.atan2(mouseY - playerScreenY, mouseX - playerScreenX);
+    // Calculate angle from player to mouse
+    const playerScreenX = (myPlayer.x - cameraX) * TILE_SIZE + TILE_SIZE / 2;
+    const playerScreenY = (myPlayer.y - cameraY) * TILE_SIZE + TILE_SIZE / 2;
+    const angle = Math.atan2(mouseY - playerScreenY, mouseX - playerScreenX);
 
-  // Send angle update to server
-  room.send('updateAngle', { angle });
-});
+    // Send angle update to server
+    room.send('updateAngle', { angle });
+  });
+}
 
 // Debug command to show network stats
 window.showStats = function() {
@@ -1853,15 +1737,29 @@ window.copyRoomLink = function() {
 
 // Show success message
 function showCopySuccess() {
+  // Side panel status
   const status = document.getElementById('copyLinkStatus');
   const btn = document.getElementById('copyRoomLinkBtn');
   
-  status.style.display = 'block';
-  btn.textContent = '✓ Copied!';
+  if (status) status.style.display = 'block';
+  if (btn) btn.textContent = '✓ Copied!';
+  
+  // Waiting room status
+  const waitingStatus = document.getElementById('waitingCopyStatus');
+  const waitingBtn = document.getElementById('waitingCopyLinkBtn');
+  
+  if (waitingStatus) {
+    waitingStatus.classList.remove('show');
+    // Force reflow to restart animation
+    void waitingStatus.offsetWidth;
+    waitingStatus.classList.add('show');
+  }
+  if (waitingBtn) waitingBtn.textContent = '✓ Copied!';
   
   setTimeout(() => {
-    status.style.display = 'none';
-    btn.textContent = '📋 Copy Room Link';
+    if (status) status.style.display = 'none';
+    if (btn) btn.textContent = 'Copy Room Link';
+    if (waitingBtn) waitingBtn.textContent = 'Copy Invite Link';
   }, 2000);
 }
 
