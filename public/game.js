@@ -45,16 +45,12 @@ const JOYSTICK_CONFIG = {
   moveThrottle: 100,      // ms between movement commands
 };
 
-// Direction to angle mapping (8 directions)
+// Direction to angle mapping (4 cardinal directions)
 const DIRECTION_ANGLES = {
   'right': 0,
-  'down-right': Math.PI / 4,
   'down': Math.PI / 2,
-  'down-left': 3 * Math.PI / 4,
   'left': Math.PI,
-  'up-left': -3 * Math.PI / 4,
   'up': -Math.PI / 2,
-  'up-right': -Math.PI / 4,
 };
 
 // Initialize touch controls
@@ -264,7 +260,7 @@ function handleJoystickEnd(e) {
   }
 }
 
-// Convert joystick angle to 8-way direction
+// Convert joystick angle to 4-way cardinal direction
 function getDirectionFromAngle(angle) {
   // Normalize angle to 0-2PI range
   let normalizedAngle = angle;
@@ -272,35 +268,31 @@ function getDirectionFromAngle(angle) {
     normalizedAngle += 2 * Math.PI;
   }
   
-  // Divide into 8 sectors (each 45 degrees / PI/4 radians)
-  // Offset by 22.5 degrees so that "right" is centered at 0
-  const sectorAngle = Math.PI / 4;
+  // Divide into 4 sectors (each 90 degrees / PI/2 radians)
+  // Offset by 45 degrees so that "right" is centered at 0
+  const sectorAngle = Math.PI / 2;
   const offset = sectorAngle / 2;
   
-  const sector = Math.floor((normalizedAngle + offset) / sectorAngle) % 8;
+  const sector = Math.floor((normalizedAngle + offset) / sectorAngle) % 4;
   
   const directions = [
-    'right',      // 0: -22.5 to 22.5 degrees
-    'down-right', // 1: 22.5 to 67.5 degrees  
-    'down',       // 2: 67.5 to 112.5 degrees
-    'down-left',  // 3: 112.5 to 157.5 degrees
-    'left',       // 4: 157.5 to 202.5 degrees
-    'up-left',    // 5: 202.5 to 247.5 degrees
-    'up',         // 6: 247.5 to 292.5 degrees
-    'up-right',   // 7: 292.5 to 337.5 degrees
+    'right',  // 0: -45 to 45 degrees
+    'down',   // 1: 45 to 135 degrees
+    'left',   // 2: 135 to 225 degrees
+    'up',     // 3: 225 to 315 degrees (or -135 to -45)
   ];
   
   return directions[sector];
 }
 
-// Send movement command to server (supports 8 directions)
+// Send movement command to server (4 cardinal directions)
 function sendMoveCommand(direction) {
   if (!room || !mySessionId) return;
   
   const myPlayer = room.state.players.get(mySessionId);
   if (!myPlayer || myPlayer.lives <= 0) return;
   
-  // Send the direction directly - server now supports all 8 directions
+  // Send the direction directly
   room.send('move', { direction });
 }
 
@@ -411,7 +403,10 @@ const TileType = {
   EXIT: 2,
   SPAWN: 3,
   OBSTACLE: 4,
-  TRANSPORT_INACTIVE: 5 // Blue tile after transport is used
+  TRANSPORT_INACTIVE: 5, // Blue tile after transport is used
+  ENTRY_PORTAL: 6,       // Purple portal - go back to previous map
+  EXIT_PORTAL: 7,        // Green portal - go to next map
+  HOME_MARKER: 8         // Gold marker - starting map indicator (can't go back)
 };
 
 // Client-side Dungeon Generator (must match server-side algorithm)
@@ -548,11 +543,11 @@ class DungeonGenerator {
     }
   }
 
-  generate(difficulty = 1) {
+  generate(mapDepth = 0) {
     this.grid = this.createEmptyGrid();
     this.rooms = [];
 
-    const numRooms = Math.min(8 + difficulty, 15);
+    const numRooms = Math.min(8 + mapDepth, 15);
     const minRoomSize = 6;
     const maxRoomSize = 12;
 
@@ -584,7 +579,18 @@ class DungeonGenerator {
     const spawnY = Math.floor(firstRoom.y + firstRoom.height / 2);
     this.grid[spawnY][spawnX] = TileType.SPAWN;
 
-    // Find a suitable exit point that's far from spawn
+    // Place entry portal or home marker at spawn location based on depth
+    let entryPortalPoint = null;
+    if (mapDepth === 0) {
+      // First map: place gold home marker (can't go back)
+      this.grid[spawnY][spawnX] = TileType.HOME_MARKER;
+    } else {
+      // Subsequent maps: place purple entry portal (go back)
+      this.grid[spawnY][spawnX] = TileType.ENTRY_PORTAL;
+      entryPortalPoint = { x: spawnX, y: spawnY };
+    }
+
+    // Find a suitable exit portal point that's far from spawn
     // Minimum distance should be at least 60 tiles for a good journey on 120x120 map
     const MIN_DISTANCE = 60;
     let exitRoomIndex = this.rooms.length - 1;
@@ -617,13 +623,13 @@ class DungeonGenerator {
       exitY = Math.floor(exitRoom.y + exitRoom.height / 2);
     }
 
-    this.grid[exitY][exitX] = TileType.EXIT;
+    // Place green exit portal (go to next map)
+    this.grid[exitY][exitX] = TileType.EXIT_PORTAL;
+    const exitPortalPoint = { x: exitX, y: exitY };
 
-    // Place obstacles throughout the dungeon
-    this.placeObstacles(spawnX, spawnY, exitX, exitY, difficulty);
-
-    // Note: Client doesn't need to place transports - server manages them
-    // Transports are invisible on the client side anyway
+    // Place obstacles throughout the dungeon (density based on depth)
+    const obstaclePercent = 5 + mapDepth; // 5% base + 1% per depth
+    this.placeObstaclesWithPercent(spawnX, spawnY, exitX, exitY, obstaclePercent);
 
     return {
       grid: this.grid,
@@ -632,8 +638,37 @@ class DungeonGenerator {
       height: this.height,
       spawnPoint: { x: spawnX, y: spawnY },
       exitPoint: { x: exitX, y: exitY },
+      entryPortalPoint: entryPortalPoint,
+      exitPortalPoint: exitPortalPoint,
+      mapDepth: mapDepth,
       transportPoints: [] // Empty for client, server tracks actual transports
     };
+  }
+
+  /**
+   * Place obstacles with a specific percentage
+   */
+  placeObstaclesWithPercent(spawnX, spawnY, exitX, exitY, percent) {
+    const totalFloorTiles = this.grid.flat().filter(tile => tile === TileType.FLOOR).length;
+    const obstacleCount = Math.floor(totalFloorTiles * (percent / 100));
+    let placed = 0;
+    let attempts = 0;
+    const maxAttempts = obstacleCount * 3;
+
+    while (placed < obstacleCount && attempts < maxAttempts) {
+      const x = this.randomInt(0, this.width - 1);
+      const y = this.randomInt(0, this.height - 1);
+
+      if (
+        this.grid[y][x] === TileType.FLOOR &&
+        Math.abs(x - spawnX) > 3 && Math.abs(y - spawnY) > 3 &&
+        Math.abs(x - exitX) > 3 && Math.abs(y - exitY) > 3
+      ) {
+        this.grid[y][x] = TileType.OBSTACLE;
+        placed++;
+      }
+      attempts++;
+    }
   }
 }
 
@@ -770,6 +805,9 @@ const COLORS = {
   OBSTACLE: '#000000',  // Pure black for clear distinction
   TRANSPORT_INACTIVE: '#4d94ff', // Blue (used portal)
   TRANSPORT_ACTIVE: '#ff00ff',   // Magenta (for debugging - normally invisible)
+  ENTRY_PORTAL: '#9b59b6',       // Purple portal (go back)
+  EXIT_PORTAL: '#27ae60',        // Green portal (go forward)
+  HOME_MARKER: '#f39c12',        // Gold/orange (starting map marker)
   PLAYER: '#0f380f',    // Dark (current player)
   OTHER_PLAYER: '#8bac0f', // Light (other players)
 };
@@ -1024,11 +1062,13 @@ async function connect(roomName, create = false, playerName = '') {
       initialStateSizeBytes = new TextEncoder().encode(stateJSON).length;
 
       // Generate dungeon from seed (must produce same result as server!)
-      console.log('🎲 Generating dungeon from seed:', state.seed);
+      // Use currentMapDepth from state if available, otherwise default to 0
+      const initialMapDepth = state.currentMapDepth || 0;
+      console.log('🎲 Generating dungeon from seed:', state.seed, 'at depth:', initialMapDepth);
       const generator = new DungeonGenerator(state.width, state.height, state.seed);
 
       try {
-        const dungeonData = generator.generate(1); // difficulty is always 1 for now
+        const dungeonData = generator.generate(initialMapDepth);
         dungeonGrid = dungeonData.grid;
 
         console.log('✅ Dungeon loaded:', dungeonWidth, 'x', dungeonHeight);
@@ -1106,6 +1146,35 @@ async function connect(roomName, create = false, playerName = '') {
       }
 
       // Note: We keep the same dungeon layout, just increase difficulty
+      render();
+    });
+
+    // Listen for map change (portal navigation between depths)
+    room.onMessage('mapChanged', (message) => {
+      console.log('🗺️ Map changed!', message);
+
+      // Regenerate dungeon grid with new seed
+      const generator = new DungeonGenerator(room.state.width, room.state.height, message.newSeed);
+      const newDungeonData = generator.generate(message.newDepth);
+      dungeonGrid = newDungeonData.grid;
+
+      // Update map depth display
+      const mapDepthEl = document.getElementById('mapDepth');
+      if (mapDepthEl) {
+        mapDepthEl.textContent = message.newDepth;
+      }
+
+      // Show notification based on direction
+      if (message.newDepth > 0) {
+        statusEl.textContent = `🗺️ Map Depth ${message.newDepth} | More bots, tougher enemies!`;
+      } else {
+        statusEl.textContent = `🏠 Returned to starting map (Depth 0)`;
+      }
+
+      // Clear teleport animations for new map
+      teleportAnimations = [];
+
+      // Force re-render with new map
       render();
     });
 
@@ -1266,6 +1335,15 @@ function render() {
             break;
           case 5: // TRANSPORT_INACTIVE (blue)
             color = COLORS.TRANSPORT_INACTIVE;
+            break;
+          case 6: // ENTRY_PORTAL (purple - go back)
+            color = COLORS.ENTRY_PORTAL;
+            break;
+          case 7: // EXIT_PORTAL (green - go forward)
+            color = COLORS.EXIT_PORTAL;
+            break;
+          case 8: // HOME_MARKER (gold - starting map)
+            color = COLORS.HOME_MARKER;
             break;
         }
 
