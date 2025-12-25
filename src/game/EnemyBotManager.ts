@@ -718,8 +718,14 @@ export class EnemyBotManager {
     // Check against server-side dungeon data
     const tile = this.dungeonData.grid[gridY][gridX];
 
-    // Can walk on floor, spawn, exit, or inactive transports - but NOT obstacles or walls
-    return tile === TileType.FLOOR || tile === TileType.SPAWN || tile === TileType.EXIT || tile === TileType.TRANSPORT_INACTIVE;
+    // Bots can walk on floor, spawn, exit, inactive transports, and portal tiles - but NOT obstacles or walls
+    return tile === TileType.FLOOR || 
+           tile === TileType.SPAWN || 
+           tile === TileType.EXIT || 
+           tile === TileType.TRANSPORT_INACTIVE ||
+           tile === TileType.ENTRY_PORTAL ||
+           tile === TileType.EXIT_PORTAL ||
+           tile === TileType.HOME_MARKER;
   }
 
   /**

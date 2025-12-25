@@ -9,6 +9,10 @@ export class Player extends Schema {
   @type("number") angle: number = 0; // Direction player is facing (for triangle)
   @type("number") score: number = 0; // Kills
   @type("number") invincibleUntil: number = 0; // Timestamp when invincibility ends
+  
+  // Multi-map tracking
+  @type("number") currentMapDepth: number = 0;  // Which map the player is on (0 = starting map)
+  @type("number") currentMapSeed: number = 0;   // Seed of the player's current map
 }
 
 export class Bot extends Schema {
@@ -56,4 +60,11 @@ export class DungeonState extends Schema {
   @type("number") killsNeededForNextLevel: number = 10; // Dynamic target per level
   @type("boolean") gameStarted: boolean = false; // Whether the game has started (bots spawn)
   @type("string") hostSessionId: string = ""; // Session ID of the room host (can start game)
+  
+  // Multi-map portal coordinates (for current player's view)
+  @type("number") entryPortalX: number = -1;  // -1 means no entry portal (first map)
+  @type("number") entryPortalY: number = -1;
+  @type("number") exitPortalX: number = 0;    // Portal to next map
+  @type("number") exitPortalY: number = 0;
+  @type("number") currentMapDepth: number = 0; // Current map depth being viewed (for spectators)
 }

@@ -36,10 +36,61 @@ export interface Room {
 export enum TileType {
   WALL = 0,
   FLOOR = 1,
-  EXIT = 2,
+  EXIT = 2,           // Legacy - keeping for backwards compatibility
   SPAWN = 3,
   OBSTACLE = 4,
   TRANSPORT_INACTIVE = 5, // Blue tile after transport is used
+  ENTRY_PORTAL = 6,   // Purple portal - return to previous map
+  EXIT_PORTAL = 7,    // Green portal - go to next map
+  HOME_MARKER = 8,    // Gold marker - starting map (depth 0), can't go back
+}
+
+/**
+ * Difficulty scaling configuration for multi-map progression
+ * Each map depth increases difficulty
+ */
+export const DIFFICULTY_CONFIG = {
+  // Base values at map depth 0
+  baseBotsCount: 5,
+  baseBotHealth: 100,
+  baseBotSpeed: 333,           // ms between moves (lower = faster)
+  baseObstaclePercent: 5,      // percentage of floor tiles
+  
+  // Per-map-depth scaling
+  botsPerDepth: 2,             // +2 bots per map depth
+  healthPerDepth: 25,          // +25 HP per map depth  
+  speedReductionPerDepth: 15,  // -15ms per depth (faster movement)
+  obstaclePercentPerDepth: 1,  // +1% obstacles per depth
+  
+  // Caps to prevent impossibility (or remove for true insanity)
+  maxBots: 30,
+  maxHealth: 300,
+  minSpeed: 150,               // Can't go below 150ms
+  maxObstaclePercent: 15,
+};
+
+/**
+ * Calculate difficulty parameters for a given map depth
+ */
+export function getDifficultyForDepth(mapDepth: number) {
+  return {
+    botCount: Math.min(
+      DIFFICULTY_CONFIG.baseBotsCount + (mapDepth * DIFFICULTY_CONFIG.botsPerDepth),
+      DIFFICULTY_CONFIG.maxBots
+    ),
+    botHealth: Math.min(
+      DIFFICULTY_CONFIG.baseBotHealth + (mapDepth * DIFFICULTY_CONFIG.healthPerDepth),
+      DIFFICULTY_CONFIG.maxHealth
+    ),
+    botSpeed: Math.max(
+      DIFFICULTY_CONFIG.baseBotSpeed - (mapDepth * DIFFICULTY_CONFIG.speedReductionPerDepth),
+      DIFFICULTY_CONFIG.minSpeed
+    ),
+    obstaclePercent: Math.min(
+      DIFFICULTY_CONFIG.baseObstaclePercent + (mapDepth * DIFFICULTY_CONFIG.obstaclePercentPerDepth),
+      DIFFICULTY_CONFIG.maxObstaclePercent
+    ) / 100, // Convert to decimal
+  };
 }
 
 export interface SpawnZone {
@@ -55,9 +106,13 @@ export interface DungeonData {
   width: number;
   height: number;
   spawnPoint: { x: number; y: number };
-  exitPoint: { x: number; y: number };
+  exitPoint: { x: number; y: number };           // Legacy exit point
   transportPoints: Array<{ x: number; y: number }>; // Active transport locations
   spawnZones: SpawnZone[]; // Bot spawn zones distributed around the map
+  // Multi-map portal system
+  entryPortalPoint: { x: number; y: number } | null;  // Where player entered (null on first map)
+  exitPortalPoint: { x: number; y: number };          // Portal to next map
+  mapDepth: number;                                    // Current map depth (0 = starting map)
 }
 
 export class DungeonGenerator {
@@ -313,12 +368,15 @@ export class DungeonGenerator {
     return zones;
   }
 
-  public generate(difficulty: number = 1): DungeonData {
+  public generate(mapDepth: number = 0): DungeonData {
     this.grid = this.createEmptyGrid();
     this.rooms = [];
 
-    // Difficulty affects number of rooms (8-15 rooms for larger map)
-    const numRooms = Math.min(8 + difficulty, 15);
+    // Get difficulty parameters based on map depth
+    const difficultyParams = getDifficultyForDepth(mapDepth);
+
+    // Number of rooms based on map depth (8-15 rooms for larger map)
+    const numRooms = Math.min(8 + mapDepth, 15);
     const minRoomSize = 6;  // Larger rooms for 8 players
     const maxRoomSize = 12;
 
@@ -351,14 +409,22 @@ export class DungeonGenerator {
     const firstRoom = this.rooms[0];
     const spawnX = Math.floor(firstRoom.x + firstRoom.width / 2);
     const spawnY = Math.floor(firstRoom.y + firstRoom.height / 2);
-    this.grid[spawnY][spawnX] = TileType.SPAWN;
+    
+    // Entry portal or home marker at spawn point based on map depth
+    if (mapDepth === 0) {
+      // First map - place HOME_MARKER (gold) - can't go back
+      this.grid[spawnY][spawnX] = TileType.HOME_MARKER;
+    } else {
+      // Subsequent maps - place ENTRY_PORTAL (purple) - return to previous map
+      this.grid[spawnY][spawnX] = TileType.ENTRY_PORTAL;
+    }
 
-    // Find a suitable exit point that's far from spawn
+    // Find a suitable exit portal point that's far from spawn
     // Minimum distance should be at least 60 tiles for a good journey on 120x120 map
     const MIN_DISTANCE = 60;
     let exitRoomIndex = this.rooms.length - 1;
-    let exitX = 0;
-    let exitY = 0;
+    let exitPortalX = 0;
+    let exitPortalY = 0;
 
     // Start from the last room and work backwards if needed
     while (exitRoomIndex >= 0) {
@@ -370,8 +436,8 @@ export class DungeonGenerator {
 
       if (distance >= MIN_DISTANCE) {
         // Found a good exit location
-        exitX = tempExitX;
-        exitY = tempExitY;
+        exitPortalX = tempExitX;
+        exitPortalY = tempExitY;
         break;
       }
 
@@ -382,17 +448,18 @@ export class DungeonGenerator {
     if (exitRoomIndex < 0) {
       exitRoomIndex = this.rooms.length - 1;
       const exitRoom = this.rooms[exitRoomIndex];
-      exitX = Math.floor(exitRoom.x + exitRoom.width / 2);
-      exitY = Math.floor(exitRoom.y + exitRoom.height / 2);
+      exitPortalX = Math.floor(exitRoom.x + exitRoom.width / 2);
+      exitPortalY = Math.floor(exitRoom.y + exitRoom.height / 2);
     }
 
-    this.grid[exitY][exitX] = TileType.EXIT;
+    // Place EXIT_PORTAL (green) - leads to next map
+    this.grid[exitPortalY][exitPortalX] = TileType.EXIT_PORTAL;
 
-    // Place obstacles throughout the dungeon
-    this.placeObstacles(spawnX, spawnY, exitX, exitY, difficulty);
+    // Place obstacles throughout the dungeon (using depth-scaled percentage)
+    this.placeObstaclesWithPercent(spawnX, spawnY, exitPortalX, exitPortalY, difficultyParams.obstaclePercent);
 
-    // Place transport portals (3 invisible teleport spots)
-    const transportPoints = this.placeTransports(spawnX, spawnY, exitX, exitY);
+    // Place transport portals (invisible teleport spots within the map)
+    const transportPoints = this.placeTransports(spawnX, spawnY, exitPortalX, exitPortalY);
 
     // Create spawn zones for bot spawning
     const spawnZones = this.createSpawnZones(spawnX, spawnY);
@@ -403,9 +470,56 @@ export class DungeonGenerator {
       width: this.width,
       height: this.height,
       spawnPoint: { x: spawnX, y: spawnY },
-      exitPoint: { x: exitX, y: exitY },
+      exitPoint: { x: exitPortalX, y: exitPortalY },  // Legacy compatibility
       transportPoints: transportPoints,
       spawnZones: spawnZones,
+      // Multi-map portal system
+      entryPortalPoint: mapDepth === 0 ? null : { x: spawnX, y: spawnY },
+      exitPortalPoint: { x: exitPortalX, y: exitPortalY },
+      mapDepth: mapDepth,
     };
+  }
+
+  /**
+   * Place obstacles with a specific percentage (used by depth-based difficulty)
+   */
+  private placeObstaclesWithPercent(
+    spawnX: number, 
+    spawnY: number, 
+    exitX: number, 
+    exitY: number, 
+    obstaclePercent: number
+  ): void {
+    const totalFloorTiles = this.grid.flat().filter(tile => tile === TileType.FLOOR).length;
+    const numObstacles = Math.floor(totalFloorTiles * obstaclePercent);
+
+    // Track obstacle positions for spacing checks
+    const obstaclePositions: Array<{ x: number; y: number }> = [];
+    const MIN_OBSTACLE_SPACING = 4;
+
+    let obstaclesPlaced = 0;
+    let attempts = 0;
+    const maxAttempts = numObstacles * 10;
+
+    while (obstaclesPlaced < numObstacles && attempts < maxAttempts) {
+      const x = this.randomInt(0, this.width - 1);
+      const y = this.randomInt(0, this.height - 1);
+
+      if (this.grid[y][x] === TileType.FLOOR) {
+        const isNearSpawn = this.getManhattanDistance(x, y, spawnX, spawnY) <= 3;
+        const isNearExit = this.getManhattanDistance(x, y, exitX, exitY) <= 3;
+        const tooCloseToOtherObstacle = obstaclePositions.some(obs =>
+          this.getManhattanDistance(x, y, obs.x, obs.y) < MIN_OBSTACLE_SPACING
+        );
+
+        if (!isNearSpawn && !isNearExit && !tooCloseToOtherObstacle) {
+          this.grid[y][x] = TileType.OBSTACLE;
+          obstaclePositions.push({ x, y });
+          obstaclesPlaced++;
+        }
+      }
+
+      attempts++;
+    }
   }
 }

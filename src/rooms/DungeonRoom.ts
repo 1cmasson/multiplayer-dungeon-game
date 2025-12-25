@@ -1,8 +1,64 @@
 import { Room, Client } from "colyseus";
 import { DungeonState, Player, Transport, Bot, Bullet } from "./schema/DungeonState";
-import { DungeonGenerator, TileType } from "../utils/dungeonGenerator";
+import { DungeonGenerator, TileType, DungeonData, getDifficultyForDepth } from "../utils/dungeonGenerator";
 import { EnemyBotManager } from '../game/EnemyBotManager';
 import { CollisionManager } from '../game/CollisionManager';
+import { MapSchema } from "@colyseus/schema";
+
+// ==========================================
+// MULTI-MAP SYSTEM CONFIGURATION
+// ==========================================
+const MAP_CACHE_LIMIT = 8; // Full state cached for last 8 maps per player
+
+// ==========================================
+// MULTI-MAP INTERFACES
+// ==========================================
+
+/** Cached state for a single map (used when player leaves a map) */
+interface CachedMapState {
+  seed: number;
+  depth: number;
+  bots: Array<{ 
+    id: string; 
+    x: number; 
+    y: number; 
+    health: number; 
+    maxHealth: number;
+    targetX: number;
+    targetY: number;
+  }>;
+  usedTransports: Array<{ x: number; y: number }>;
+  playerLastPosition: { x: number; y: number };  // Where player was when they left
+  exitPortalPoint: { x: number; y: number };
+  entryPortalPoint: { x: number; y: number } | null;
+}
+
+/** Per-player map navigation state */
+interface PlayerMapState {
+  sessionId: string;
+  currentDepth: number;
+  mapCache: Map<number, CachedMapState>;  // depth -> full state (limited to MAP_CACHE_LIMIT)
+  seedHistory: Map<number, number>;        // depth -> seed (unlimited, for regeneration)
+}
+
+/** An active map instance with its own bots and state */
+interface ActiveMap {
+  seed: number;
+  depth: number;
+  dungeonData: DungeonData;
+  bots: MapSchema<Bot>;
+  botManager: EnemyBotManager;
+  collisionManager: CollisionManager;
+  players: Set<string>;  // sessionIds currently on this map
+  lastActivity: number;  // timestamp for cleanup
+}
+
+/**
+ * Generate deterministic next seed from current seed
+ */
+function generateNextSeed(currentSeed: number): number {
+  return (currentSeed * 16807) % 2147483647;
+}
 
 export class DungeonRoom extends Room<DungeonState> {
   maxClients = 8;
@@ -13,6 +69,12 @@ export class DungeonRoom extends Room<DungeonState> {
   private bulletIdCounter = 0;
   private enemyBotManager!: EnemyBotManager;
   private collisionManager!: CollisionManager;
+
+  // ==========================================
+  // MULTI-MAP SYSTEM STATE
+  // ==========================================
+  private activeMaps: Map<string, ActiveMap> = new Map(); // key: `${depth}_${seed}`
+  private playerMapStates: Map<string, PlayerMapState> = new Map(); // key: sessionId
 
   onCreate(options: any) {
     this.state = new DungeonState();
@@ -123,6 +185,9 @@ export class DungeonRoom extends Room<DungeonState> {
 
         // Check if player stepped on an active transport
         this.handleTransport(player, client.sessionId, client);
+        
+        // Check if player stepped on a portal (entry/exit)
+        this.checkPortalCollision(player, client.sessionId, client);
       }
     });
 
@@ -206,6 +271,22 @@ export class DungeonRoom extends Room<DungeonState> {
     player.angle = 0;
     player.score = 0;
     player.invincibleUntil = 0; // No invincibility on spawn
+    
+    // Initialize multi-map player state
+    player.currentMapDepth = 0;
+    player.currentMapSeed = this.state.seed;
+    
+    // Initialize player's map navigation state
+    const playerMapState = this.initializePlayerMapState(client.sessionId, this.state.seed);
+    
+    // Add player to the initial map (depth 0)
+    const initialMapKey = this.getMapKey(0, this.state.seed);
+    let initialMap = this.activeMaps.get(initialMapKey);
+    if (!initialMap) {
+      // Create the initial map if it doesn't exist yet
+      initialMap = this.getOrCreateMap(0, this.state.seed);
+    }
+    initialMap.players.add(client.sessionId);
 
     this.state.players.set(client.sessionId, player);
 
@@ -248,6 +329,22 @@ export class DungeonRoom extends Room<DungeonState> {
         text: `${player.name} left the game`
       });
     }
+    
+    // Clean up player from their current map
+    const playerMapState = this.playerMapStates.get(client.sessionId);
+    if (playerMapState) {
+      const currentSeed = playerMapState.seedHistory.get(playerMapState.currentDepth);
+      if (currentSeed !== undefined) {
+        const mapKey = this.getMapKey(playerMapState.currentDepth, currentSeed);
+        const activeMap = this.activeMaps.get(mapKey);
+        if (activeMap) {
+          activeMap.players.delete(client.sessionId);
+        }
+      }
+      // Remove player's map state
+      this.playerMapStates.delete(client.sessionId);
+    }
+    
     this.state.players.delete(client.sessionId);
 
     // Handle host leaving before game starts - transfer host to next player
@@ -284,6 +381,9 @@ export class DungeonRoom extends Room<DungeonState> {
         });
       }
     }
+    
+    // Cleanup empty maps
+    this.cleanupEmptyMaps();
   }
 
   onDispose() {
@@ -542,13 +642,13 @@ export class DungeonRoom extends Room<DungeonState> {
   }
 
   /**
-   * Generate a specific level
+   * Generate a specific level (legacy - now uses map depth 0 for initial generation)
    */
   private generateLevel(level: number): void {
-    const difficulty = level; // Difficulty increases with level
     const seed = this.levelSeeds[level - 1];
     const generator = new DungeonGenerator(120, 120, seed);
-    this.dungeonData = generator.generate(difficulty);
+    // Use mapDepth 0 for initial map generation
+    this.dungeonData = generator.generate(0);
 
     // Set dungeon state (seed-based - clients will regenerate from seed)
     this.state.seed = generator.seed;
@@ -556,6 +656,13 @@ export class DungeonRoom extends Room<DungeonState> {
     this.state.height = this.dungeonData.height;
     this.state.exitX = this.dungeonData.exitPoint.x;
     this.state.exitY = this.dungeonData.exitPoint.y;
+    
+    // Set initial portal positions from dungeon data
+    this.state.currentMapDepth = 0;
+    this.state.entryPortalX = this.dungeonData.entryPortalPoint?.x ?? -1;
+    this.state.entryPortalY = this.dungeonData.entryPortalPoint?.y ?? -1;
+    this.state.exitPortalX = this.dungeonData.exitPortalPoint.x;
+    this.state.exitPortalY = this.dungeonData.exitPortalPoint.y;
 
     // Clear and reinitialize active transports
     this.state.activeTransports.clear();
@@ -569,9 +676,9 @@ export class DungeonRoom extends Room<DungeonState> {
     console.log(`\n🎮 LEVEL ${level} GENERATED`);
     console.log(`   Rooms: ${this.dungeonData.rooms.length}`);
     console.log(`   Seed: ${this.state.seed}`);
-    console.log(`   Difficulty: ${difficulty}`);
+    console.log(`   Map Depth: 0`);
     console.log(`   Spawn: (${this.dungeonData.spawnPoint.x}, ${this.dungeonData.spawnPoint.y})`);
-    console.log(`   Exit: (${this.state.exitX}, ${this.state.exitY})`);
+    console.log(`   Exit Portal: (${this.state.exitPortalX}, ${this.state.exitPortalY})`);
     console.log(`   Transports: ${this.state.activeTransports.length} portals\n`);
   }
 
@@ -693,8 +800,14 @@ export class DungeonRoom extends Room<DungeonState> {
     // Check against server-side dungeon data
     const tile = this.dungeonData.grid[gridY][gridX];
 
-    // Can walk on floor, spawn, exit, or inactive transports - but NOT obstacles or walls
-    return tile === TileType.FLOOR || tile === TileType.SPAWN || tile === TileType.EXIT || tile === TileType.TRANSPORT_INACTIVE;
+    // Can walk on floor, spawn, exit, inactive transports, and portal tiles - but NOT obstacles or walls
+    return tile === TileType.FLOOR || 
+           tile === TileType.SPAWN || 
+           tile === TileType.EXIT || 
+           tile === TileType.TRANSPORT_INACTIVE ||
+           tile === TileType.ENTRY_PORTAL ||
+           tile === TileType.EXIT_PORTAL ||
+           tile === TileType.HOME_MARKER;
   }
 
 
@@ -752,5 +865,388 @@ export class DungeonRoom extends Room<DungeonState> {
     return 15 + (level - 2) * 5;
   }
 
+  // ==========================================
+  // MULTI-MAP MANAGEMENT METHODS
+  // ==========================================
+
+  /**
+   * Generate a unique map key from depth and seed
+   */
+  private getMapKey(depth: number, seed: number): string {
+    return `${depth}_${seed}`;
+  }
+
+  /**
+   * Get or create an active map instance
+   * If the map exists, return it. Otherwise, generate and initialize it.
+   */
+  private getOrCreateMap(depth: number, seed: number, cachedState?: CachedMapState): ActiveMap {
+    const mapKey = this.getMapKey(depth, seed);
+    
+    // Return existing map if active
+    const existingMap = this.activeMaps.get(mapKey);
+    if (existingMap) {
+      existingMap.lastActivity = Date.now();
+      return existingMap;
+    }
+
+    // Generate new dungeon data for this depth/seed
+    const generator = new DungeonGenerator(120, 120, seed);
+    const dungeonData = generator.generate(depth);
+
+    // Create bot manager and collision manager for this map
+    const botManager = new EnemyBotManager(this.state, dungeonData);
+    const collisionManager = new CollisionManager(this.state, dungeonData);
+
+    // Create new active map
+    const activeMap: ActiveMap = {
+      seed,
+      depth,
+      dungeonData,
+      bots: new MapSchema<Bot>(),
+      botManager,
+      collisionManager,
+      players: new Set(),
+      lastActivity: Date.now()
+    };
+
+    // If we have cached state, restore bots from cache
+    if (cachedState) {
+      this.restoreBotsFromCache(activeMap, cachedState);
+    } else {
+      // New map - spawn fresh bots based on difficulty
+      const difficulty = getDifficultyForDepth(depth);
+      // Bots will be spawned when player enters and game starts
+      console.log(`🗺️ Created new map at depth ${depth} with seed ${seed}`);
+      console.log(`   Difficulty: ${difficulty.botCount} bots, ${difficulty.botHealth} HP, ${difficulty.botSpeed}ms speed`);
+    }
+
+    this.activeMaps.set(mapKey, activeMap);
+    return activeMap;
+  }
+
+  /**
+   * Restore bots from cached state (when player returns to a previously visited map)
+   */
+  private restoreBotsFromCache(activeMap: ActiveMap, cachedState: CachedMapState): void {
+    console.log(`♻️ Restoring ${cachedState.bots.length} bots from cache for depth ${cachedState.depth}`);
+    
+    cachedState.bots.forEach(botData => {
+      const bot = new Bot();
+      bot.id = botData.id;
+      bot.x = botData.x;
+      bot.y = botData.y;
+      bot.health = botData.health;
+      bot.maxHealth = botData.maxHealth;
+      bot.targetX = botData.targetX;
+      bot.targetY = botData.targetY;
+      bot.moveStartTime = Date.now();
+      activeMap.bots.set(bot.id, bot);
+    });
+  }
+
+  /**
+   * Cache the current map state for a player (called when player leaves a map)
+   */
+  private cacheMapStateForPlayer(sessionId: string, activeMap: ActiveMap, playerX: number, playerY: number): void {
+    const playerState = this.playerMapStates.get(sessionId);
+    if (!playerState) return;
+
+    // Create cached state
+    const cachedState: CachedMapState = {
+      seed: activeMap.seed,
+      depth: activeMap.depth,
+      bots: [],
+      usedTransports: [],
+      playerLastPosition: { x: playerX, y: playerY },
+      exitPortalPoint: activeMap.dungeonData.exitPortalPoint,
+      entryPortalPoint: activeMap.dungeonData.entryPortalPoint
+    };
+
+    // Cache bot states
+    activeMap.bots.forEach((bot, botId) => {
+      cachedState.bots.push({
+        id: botId,
+        x: bot.x,
+        y: bot.y,
+        health: bot.health,
+        maxHealth: bot.maxHealth,
+        targetX: bot.targetX,
+        targetY: bot.targetY
+      });
+    });
+
+    // Store in player's cache (with limit)
+    playerState.mapCache.set(activeMap.depth, cachedState);
+    playerState.seedHistory.set(activeMap.depth, activeMap.seed);
+
+    // Enforce cache limit - remove oldest entries beyond limit
+    if (playerState.mapCache.size > MAP_CACHE_LIMIT) {
+      const depths = Array.from(playerState.mapCache.keys()).sort((a, b) => a - b);
+      const depthsToRemove = depths.slice(0, depths.length - MAP_CACHE_LIMIT);
+      depthsToRemove.forEach(d => playerState.mapCache.delete(d));
+    }
+
+    console.log(`💾 Cached map state for player ${sessionId} at depth ${activeMap.depth} (${cachedState.bots.length} bots)`);
+  }
+
+  /**
+   * Initialize player map state when they join
+   */
+  private initializePlayerMapState(sessionId: string, initialSeed: number): PlayerMapState {
+    const playerState: PlayerMapState = {
+      sessionId,
+      currentDepth: 0,
+      mapCache: new Map(),
+      seedHistory: new Map([[0, initialSeed]]) // Depth 0 uses initial seed
+    };
+    this.playerMapStates.set(sessionId, playerState);
+    return playerState;
+  }
+
+  /**
+   * Handle player stepping on EXIT portal (green) - go to NEXT map (deeper)
+   */
+  private handleExitPortal(player: Player, sessionId: string, client: Client): void {
+    const playerState = this.playerMapStates.get(sessionId);
+    if (!playerState) return;
+
+    const currentDepth = playerState.currentDepth;
+    const nextDepth = currentDepth + 1;
+    
+    // Get current map and cache its state
+    const currentSeed = playerState.seedHistory.get(currentDepth);
+    if (currentSeed !== undefined) {
+      const currentMapKey = this.getMapKey(currentDepth, currentSeed);
+      const currentMap = this.activeMaps.get(currentMapKey);
+      if (currentMap) {
+        this.cacheMapStateForPlayer(sessionId, currentMap, player.x, player.y);
+        currentMap.players.delete(sessionId);
+      }
+    }
+
+    // Generate or retrieve seed for next depth
+    let nextSeed = playerState.seedHistory.get(nextDepth);
+    if (nextSeed === undefined) {
+      // Generate new seed for unexplored depth
+      nextSeed = generateNextSeed(currentSeed || Date.now());
+      playerState.seedHistory.set(nextDepth, nextSeed);
+    }
+
+    // Check if we have cached state for the next map
+    const cachedState = playerState.mapCache.get(nextDepth);
+
+    // Get or create the next map
+    const nextMap = this.getOrCreateMap(nextDepth, nextSeed, cachedState);
+    nextMap.players.add(sessionId);
+
+    // Update player state
+    playerState.currentDepth = nextDepth;
+    player.currentMapDepth = nextDepth;
+    player.currentMapSeed = nextSeed;
+
+    // Position player at the entry portal of the new map (or spawn if first visit)
+    if (cachedState && cachedState.entryPortalPoint) {
+      player.x = cachedState.entryPortalPoint.x;
+      player.y = cachedState.entryPortalPoint.y;
+    } else if (nextMap.dungeonData.entryPortalPoint) {
+      player.x = nextMap.dungeonData.entryPortalPoint.x;
+      player.y = nextMap.dungeonData.entryPortalPoint.y;
+    } else {
+      player.x = nextMap.dungeonData.spawnPoint.x;
+      player.y = nextMap.dungeonData.spawnPoint.y;
+    }
+
+    // Update shared state for this player's view
+    this.state.currentMapDepth = nextDepth;
+    this.state.entryPortalX = nextMap.dungeonData.entryPortalPoint?.x ?? -1;
+    this.state.entryPortalY = nextMap.dungeonData.entryPortalPoint?.y ?? -1;
+    this.state.exitPortalX = nextMap.dungeonData.exitPortalPoint.x;
+    this.state.exitPortalY = nextMap.dungeonData.exitPortalPoint.y;
+
+    // Notify client of map change
+    this.send(client, "mapChanged", {
+      newDepth: nextDepth,
+      newSeed: nextSeed,
+      spawnX: player.x,
+      spawnY: player.y,
+      entryPortalX: this.state.entryPortalX,
+      entryPortalY: this.state.entryPortalY,
+      exitPortalX: this.state.exitPortalX,
+      exitPortalY: this.state.exitPortalY
+    });
+
+    console.log(`🟢 Player ${sessionId} used EXIT portal: depth ${currentDepth} → ${nextDepth}`);
+
+    // Spawn bots for new map if needed and game is running
+    if (this.state.gameStarted && nextMap.bots.size === 0) {
+      const difficulty = getDifficultyForDepth(nextDepth);
+      nextMap.botManager.spawnBots(difficulty.botCount, this.state.players);
+      console.log(`🤖 Spawned ${difficulty.botCount} bots for depth ${nextDepth}`);
+    }
+
+    // Broadcast activity
+    this.broadcast('activity', {
+      type: 'portal',
+      text: `${player.name} entered map depth ${nextDepth}`
+    });
+
+    // Cleanup empty maps
+    this.cleanupEmptyMaps();
+  }
+
+  /**
+   * Handle player stepping on ENTRY portal (purple) - go to PREVIOUS map (shallower)
+   */
+  private handleEntryPortal(player: Player, sessionId: string, client: Client): void {
+    const playerState = this.playerMapStates.get(sessionId);
+    if (!playerState) return;
+
+    const currentDepth = playerState.currentDepth;
+    
+    // Can't go back from depth 0 (home)
+    if (currentDepth <= 0) {
+      console.log(`⚠️ Player ${sessionId} tried to use entry portal at depth 0 (home)`);
+      return;
+    }
+
+    const previousDepth = currentDepth - 1;
+    
+    // Get current map and cache its state
+    const currentSeed = playerState.seedHistory.get(currentDepth);
+    if (currentSeed !== undefined) {
+      const currentMapKey = this.getMapKey(currentDepth, currentSeed);
+      const currentMap = this.activeMaps.get(currentMapKey);
+      if (currentMap) {
+        this.cacheMapStateForPlayer(sessionId, currentMap, player.x, player.y);
+        currentMap.players.delete(sessionId);
+      }
+    }
+
+    // Get seed for previous depth (should always exist since we came from there)
+    const previousSeed = playerState.seedHistory.get(previousDepth);
+    if (previousSeed === undefined) {
+      console.error(`❌ No seed found for previous depth ${previousDepth}`);
+      return;
+    }
+
+    // Check if we have cached state for the previous map
+    const cachedState = playerState.mapCache.get(previousDepth);
+
+    // Get or create the previous map
+    const previousMap = this.getOrCreateMap(previousDepth, previousSeed, cachedState);
+    previousMap.players.add(sessionId);
+
+    // Update player state
+    playerState.currentDepth = previousDepth;
+    player.currentMapDepth = previousDepth;
+    player.currentMapSeed = previousSeed;
+
+    // Position player at the exit portal of the previous map (where they left to go deeper)
+    if (cachedState && cachedState.exitPortalPoint) {
+      player.x = cachedState.exitPortalPoint.x;
+      player.y = cachedState.exitPortalPoint.y;
+    } else if (previousMap.dungeonData.exitPortalPoint) {
+      player.x = previousMap.dungeonData.exitPortalPoint.x;
+      player.y = previousMap.dungeonData.exitPortalPoint.y;
+    } else {
+      player.x = previousMap.dungeonData.spawnPoint.x;
+      player.y = previousMap.dungeonData.spawnPoint.y;
+    }
+
+    // Update shared state for this player's view
+    this.state.currentMapDepth = previousDepth;
+    this.state.entryPortalX = previousMap.dungeonData.entryPortalPoint?.x ?? -1;
+    this.state.entryPortalY = previousMap.dungeonData.entryPortalPoint?.y ?? -1;
+    this.state.exitPortalX = previousMap.dungeonData.exitPortalPoint.x;
+    this.state.exitPortalY = previousMap.dungeonData.exitPortalPoint.y;
+
+    // Notify client of map change
+    this.send(client, "mapChanged", {
+      newDepth: previousDepth,
+      newSeed: previousSeed,
+      spawnX: player.x,
+      spawnY: player.y,
+      entryPortalX: this.state.entryPortalX,
+      entryPortalY: this.state.entryPortalY,
+      exitPortalX: this.state.exitPortalX,
+      exitPortalY: this.state.exitPortalY
+    });
+
+    console.log(`🟣 Player ${sessionId} used ENTRY portal: depth ${currentDepth} → ${previousDepth}`);
+
+    // Spawn bots for previous map if needed and game is running
+    if (this.state.gameStarted && previousMap.bots.size === 0) {
+      const difficulty = getDifficultyForDepth(previousDepth);
+      previousMap.botManager.spawnBots(difficulty.botCount, this.state.players);
+      console.log(`🤖 Spawned ${difficulty.botCount} bots for depth ${previousDepth}`);
+    }
+
+    // Broadcast activity
+    this.broadcast('activity', {
+      type: 'portal',
+      text: `${player.name} returned to map depth ${previousDepth}`
+    });
+
+    // Cleanup empty maps
+    this.cleanupEmptyMaps();
+  }
+
+  /**
+   * Check if player stepped on a portal tile and handle it
+   */
+  private checkPortalCollision(player: Player, sessionId: string, client: Client): void {
+    const gridX = Math.floor(player.x);
+    const gridY = Math.floor(player.y);
+    
+    // Get player's current map
+    const playerState = this.playerMapStates.get(sessionId);
+    if (!playerState) return;
+    
+    const currentSeed = playerState.seedHistory.get(playerState.currentDepth);
+    if (currentSeed === undefined) return;
+    
+    const mapKey = this.getMapKey(playerState.currentDepth, currentSeed);
+    const activeMap = this.activeMaps.get(mapKey);
+    if (!activeMap) return;
+    
+    const tile = activeMap.dungeonData.grid[gridY]?.[gridX];
+    
+    if (tile === TileType.EXIT_PORTAL) {
+      this.handleExitPortal(player, sessionId, client);
+    } else if (tile === TileType.ENTRY_PORTAL) {
+      this.handleEntryPortal(player, sessionId, client);
+    }
+  }
+
+  /**
+   * Cleanup maps with no active players (memory management)
+   */
+  private cleanupEmptyMaps(): void {
+    const now = Date.now();
+    const CLEANUP_THRESHOLD = 60000; // 1 minute with no players
+
+    const mapsToRemove: string[] = [];
+    
+    this.activeMaps.forEach((map, key) => {
+      if (map.players.size === 0 && (now - map.lastActivity) > CLEANUP_THRESHOLD) {
+        mapsToRemove.push(key);
+      }
+    });
+
+    mapsToRemove.forEach(key => {
+      const map = this.activeMaps.get(key);
+      if (map) {
+        map.bots.clear();
+        map.botManager.clearAllBots();
+        console.log(`🧹 Cleaned up empty map: ${key}`);
+      }
+      this.activeMaps.delete(key);
+    });
+
+    if (mapsToRemove.length > 0) {
+      console.log(`🧹 Cleaned up ${mapsToRemove.length} empty maps. Active maps: ${this.activeMaps.size}`);
+    }
+  }
 
 }
