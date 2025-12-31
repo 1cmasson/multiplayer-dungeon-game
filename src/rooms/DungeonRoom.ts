@@ -483,17 +483,19 @@ export class DungeonRoom extends Room<DungeonState> {
       }
     }, DELTA_TIME);
 
-    // Broadcast bot paths for debugging (every 500ms to reduce network traffic)
-    setInterval(() => {
-      const botPaths = this.enemyBotManager.getBotPaths();
-      const pathsData: { [key: string]: Array<{ x: number; y: number }> } = {};
-      
-      botPaths.forEach((path, botId) => {
-        pathsData[botId] = path;
-      });
-      
-      this.broadcast('botPaths', pathsData);
-    }, 500);
+    // Broadcast bot paths for debugging (only in development mode)
+    if (process.env.NODE_ENV !== 'production') {
+      setInterval(() => {
+        const botPaths = this.enemyBotManager.getBotPaths();
+        const pathsData: { [key: string]: Array<{ x: number; y: number }> } = {};
+        
+        botPaths.forEach((path, botId) => {
+          pathsData[botId] = path;
+        });
+        
+        this.broadcast('botPaths', pathsData);
+      }, 500);
+    }
   }
 
   /**

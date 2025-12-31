@@ -850,7 +850,7 @@
       <div class="waiting-room-name">Room: <span id="waitingRoomName">-</span></div>
       
       <div class="waiting-players">
-        <h3>Players (<span id="waitingPlayerCount">0</span>/4)</h3>
+        <h3>Players (<span id="waitingPlayerCount">0</span>/8)</h3>
         <div id="waitingPlayersList">
           <div style="color: #666; font-style: italic;">Waiting for players...</div>
         </div>
@@ -886,7 +886,7 @@
       <div style="font-size: 11px; line-height: 1.8;">
         <div><strong>Name:</strong> <span id="panelRoomName" style="color: #ffff00;">-</span></div>
         <div><strong>ID:</strong> <span id="panelRoomId" style="color: #00ffff;">-</span></div>
-        <div><strong>Players:</strong> <span id="panelPlayerCount">0</span>/4</div>
+        <div><strong>Players:</strong> <span id="panelPlayerCount">0</span>/8</div>
         <div><strong>Host:</strong> <span id="panelRoomHost" style="color: #ffff00;">-</span></div>
       </div>
       <button id="copyRoomLinkBtn" onclick="copyRoomLink()" disabled>Copy Room Link</button>
@@ -897,7 +897,7 @@
     </div>
 
     <div class="debug-section">
-      <h4>Players (<span id="panelPlayersCount">0</span>/4)</h4>
+      <h4>Players (<span id="panelPlayersCount">0</span>/8)</h4>
       <div id="playersList" style="font-size: 11px;">
         <div style="color: #666; font-style: italic;">No players yet</div>
       </div>
@@ -929,6 +929,7 @@
   </div>
 
   <script src="https://unpkg.com/colyseus.js@^0.16.0/dist/colyseus.js"></script>
+  <script src="dungeonGenerator.js"></script>
   <script src="game.js"></script>
   <script>
     // Register Service Worker for PWA
