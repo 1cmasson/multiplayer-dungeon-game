@@ -57,6 +57,14 @@ function generatePlayerName() {
   return `${adj}${noun}${num}`;
 }
 
+function generateRoomName() {
+  const adjectives = ['Dark', 'Mystic', 'Shadow', 'Ancient', 'Cursed', 'Forgotten', 'Hidden', 'Deadly', 'Haunted', 'Twisted'];
+  const nouns = ['Dungeon', 'Crypt', 'Tomb', 'Cavern', 'Labyrinth', 'Maze', 'Depths', 'Lair', 'Abyss', 'Vault'];
+  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  return `${adj} ${noun}`;
+}
+
 function getPlayerName() {
   let name = document.getElementById('playerName').value.trim();
   if (!name) {
@@ -70,7 +78,7 @@ function getPlayerName() {
 // Create a new game room
 async function createGame() {
   const playerName = getPlayerName();
-  const roomName = document.getElementById('roomName').value.trim() || 'Unnamed Room';
+  const roomName = document.getElementById('roomName').value.trim() || generateRoomName();
   
   // Don't create the room here - let game.html do it
   // This avoids the room being disposed when we navigate away

@@ -251,29 +251,61 @@ export class DungeonRoom extends Room<DungeonState> {
     const player = new Player();
     player.sessionId = client.sessionId;
     player.name = options.playerName || `Player${Math.floor(Math.random() * 1000)}`;
-    // Ensure integer tile coordinates for player spawn
-    player.x = Math.floor(this.dungeonData.spawnPoint.x);
-    player.y = Math.floor(this.dungeonData.spawnPoint.y);
     player.lives = 3;
     player.angle = 0;
     player.score = 0;
     player.invincibleUntil = 0; // No invincibility on spawn
     
-    // Initialize multi-map player state
-    player.currentMapDepth = 0;
-    player.currentMapSeed = this.state.seed;
+    // Determine which map the new player should join
+    let targetMapDepth = 0;
+    let targetMapSeed = this.state.seed;
+    let targetMap: any = null;
+    let spawnPoint = this.dungeonData.spawnPoint;
     
-    // Initialize player's map navigation state
-    const playerMapState = this.initializePlayerMapState(client.sessionId, this.state.seed);
-    
-    // Add player to the initial map (depth 0)
-    const initialMapKey = this.getMapKey(0, this.state.seed);
-    let initialMap = this.activeMaps.get(initialMapKey);
-    if (!initialMap) {
-      // Create the initial map if it doesn't exist yet
-      initialMap = this.getOrCreateMap(0, this.state.seed);
+    // If game already started, join at the host's current map (where the action is)
+    if (this.state.gameStarted && this.state.hostSessionId) {
+      const hostPlayer = this.state.players.get(this.state.hostSessionId);
+      if (hostPlayer) {
+        targetMapDepth = hostPlayer.currentMapDepth;
+        targetMapSeed = hostPlayer.currentMapSeed;
+        
+        // Get the host's map to find the spawn point
+        const hostMapKey = this.getMapKey(targetMapDepth, targetMapSeed);
+        targetMap = this.activeMaps.get(hostMapKey);
+        
+        if (targetMap && targetMap.dungeonData) {
+          spawnPoint = targetMap.dungeonData.spawnPoint;
+          console.log(`🎮 Late-joining player ${player.name} spawning at host's map (depth: ${targetMapDepth}, seed: ${targetMapSeed})`);
+        }
+      }
     }
-    initialMap.players.add(client.sessionId);
+    
+    // Set player position at the target map's spawn point
+    player.x = Math.floor(spawnPoint.x);
+    player.y = Math.floor(spawnPoint.y);
+    
+    // Initialize multi-map player state
+    player.currentMapDepth = targetMapDepth;
+    player.currentMapSeed = targetMapSeed;
+    
+    // Initialize player's map navigation state with the target seed
+    const playerMapState = this.initializePlayerMapState(client.sessionId, targetMapSeed);
+    // Update the player's current depth in their map state
+    if (targetMapDepth > 0) {
+      playerMapState.currentDepth = targetMapDepth;
+      playerMapState.seedHistory.set(targetMapDepth, targetMapSeed);
+    }
+    
+    // Add player to the target map
+    const targetMapKey = this.getMapKey(targetMapDepth, targetMapSeed);
+    if (!targetMap) {
+      targetMap = this.activeMaps.get(targetMapKey);
+      if (!targetMap) {
+        // Create the map if it doesn't exist yet
+        targetMap = this.getOrCreateMap(targetMapDepth, targetMapSeed);
+      }
+    }
+    targetMap.players.add(client.sessionId);
 
     this.state.players.set(client.sessionId, player);
 
@@ -296,8 +328,19 @@ export class DungeonRoom extends Room<DungeonState> {
       text: `${player.name} joined the game`
     });
 
-    // If game already started (player joining mid-game), they join the active game
-    // Bots are only spawned when host clicks "Start Game"
+    // If player joined mid-game at a different map depth, send them the map info
+    if (this.state.gameStarted && targetMapDepth > 0) {
+      this.send(client, "mapChanged", {
+        newDepth: targetMapDepth,
+        newSeed: targetMapSeed,
+        spawnX: player.x,
+        spawnY: player.y,
+        entryPortalX: targetMap?.dungeonData?.entryPortal?.x ?? -1,
+        entryPortalY: targetMap?.dungeonData?.entryPortal?.y ?? -1,
+        exitPortalX: targetMap?.dungeonData?.exitPortal?.x ?? 0,
+        exitPortalY: targetMap?.dungeonData?.exitPortal?.y ?? 0
+      });
+    }
 
     // Measure state size after player joins
     this.measureStateSize();

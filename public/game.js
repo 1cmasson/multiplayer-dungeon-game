@@ -718,13 +718,13 @@ async function connect(roomName, create = false, playerName = '') {
         state.players.onAdd = (player, sessionId) => {
           console.log('👤 Player added:', player.name, sessionId);
           updatePlayersList();
-          updateWaitingPlayersList();
+          updateWaitingRoomUI(); // Updates player list AND player count in waiting room
         };
 
         state.players.onRemove = (player, sessionId) => {
           console.log('👋 Player removed:', player.name, sessionId);
           updatePlayersList();
-          updateWaitingPlayersList();
+          updateWaitingRoomUI(); // Updates player list AND player count in waiting room
         };
 
         // Listen for player changes (lives, score, etc.)
@@ -767,10 +767,16 @@ async function connect(roomName, create = false, playerName = '') {
       initialStateSizeBytes = new TextEncoder().encode(stateJSON).length;
 
       // Generate dungeon from seed (must produce same result as server!)
-      // Use currentMapDepth from state if available, otherwise default to 0
-      const initialMapDepth = state.currentMapDepth || 0;
-      console.log('🎲 Generating dungeon from seed:', state.seed, 'at depth:', initialMapDepth);
-      const generator = new DungeonGenerator(state.width, state.height, state.seed);
+      // Get the current player to check their map depth and seed
+      const myPlayer = state.players.get(mySessionId);
+      
+      // Use player's currentMapDepth and currentMapSeed if available (for late-joining players)
+      // Otherwise fall back to state defaults (for players joining before game starts)
+      const initialMapDepth = myPlayer?.currentMapDepth ?? state.currentMapDepth ?? 0;
+      const initialMapSeed = myPlayer?.currentMapSeed ?? state.seed;
+      
+      console.log('🎲 Generating dungeon from seed:', initialMapSeed, 'at depth:', initialMapDepth);
+      const generator = new DungeonGenerator(state.width, state.height, initialMapSeed);
 
       try {
         const dungeonData = generator.generate(initialMapDepth);
@@ -787,11 +793,10 @@ async function connect(roomName, create = false, playerName = '') {
         }
 
         // Initialize UI with current state
-        mapDepthEl.textContent = state.currentMapDepth || 0;
+        mapDepthEl.textContent = initialMapDepth;
         totalKillsEl.textContent = state.totalKills || 0;
         playerCountEl.textContent = state.players ? state.players.size : 0;
 
-        const myPlayer = state.players.get(mySessionId);
         if (myPlayer) {
           playerLivesEl.textContent = myPlayer.lives || 3;
         }
