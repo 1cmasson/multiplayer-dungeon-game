@@ -267,6 +267,65 @@ export class DungeonGenerator {
   }
 
   /**
+   * Check if a tile is walkable (for pathfinding)
+   */
+  private isWalkable(x: number, y: number): boolean {
+    if (x < 0 || x >= this.width || y < 0 || y >= this.height) {
+      return false;
+    }
+    const tile = this.grid[y][x];
+    return tile === TileType.FLOOR || 
+           tile === TileType.SPAWN || 
+           tile === TileType.EXIT || 
+           tile === TileType.ENTRY_PORTAL || 
+           tile === TileType.EXIT_PORTAL || 
+           tile === TileType.HOME_MARKER ||
+           tile === TileType.TRANSPORT_INACTIVE;
+  }
+
+  /**
+   * BFS to check if a path exists between two points
+   * Returns true if a walkable path exists, false otherwise
+   */
+  private hasPath(startX: number, startY: number, endX: number, endY: number): boolean {
+    if (!this.isWalkable(startX, startY) || !this.isWalkable(endX, endY)) {
+      return false;
+    }
+
+    const visited = new Set<string>();
+    const queue: Array<{ x: number; y: number }> = [{ x: startX, y: startY }];
+    visited.add(`${startX},${startY}`);
+
+    const directions = [
+      { dx: 0, dy: -1 }, // up
+      { dx: 0, dy: 1 },  // down
+      { dx: -1, dy: 0 }, // left
+      { dx: 1, dy: 0 },  // right
+    ];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+
+      if (current.x === endX && current.y === endY) {
+        return true;
+      }
+
+      for (const dir of directions) {
+        const nx = current.x + dir.dx;
+        const ny = current.y + dir.dy;
+        const key = `${nx},${ny}`;
+
+        if (!visited.has(key) && this.isWalkable(nx, ny)) {
+          visited.add(key);
+          queue.push({ x: nx, y: ny });
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Place transport portals on the map (invisible, on floor tiles)
    */
   private placeTransports(spawnX: number, spawnY: number, exitX: number, exitY: number): Array<{ x: number; y: number }> {
@@ -482,6 +541,7 @@ export class DungeonGenerator {
 
   /**
    * Place obstacles with a specific percentage (used by depth-based difficulty)
+   * Ensures a clear path always exists from spawn to exit
    */
   private placeObstaclesWithPercent(
     spawnX: number, 
@@ -499,7 +559,8 @@ export class DungeonGenerator {
 
     let obstaclesPlaced = 0;
     let attempts = 0;
-    const maxAttempts = numObstacles * 10;
+    let pathBlockedCount = 0;
+    const maxAttempts = numObstacles * 20; // Increased attempts since some will be rejected
 
     while (obstaclesPlaced < numObstacles && attempts < maxAttempts) {
       const x = this.randomInt(0, this.width - 1);
@@ -513,13 +574,28 @@ export class DungeonGenerator {
         );
 
         if (!isNearSpawn && !isNearExit && !tooCloseToOtherObstacle) {
+          // Temporarily place the obstacle
           this.grid[y][x] = TileType.OBSTACLE;
-          obstaclePositions.push({ x, y });
-          obstaclesPlaced++;
+          
+          // Check if path still exists from spawn to exit
+          if (this.hasPath(spawnX, spawnY, exitX, exitY)) {
+            // Path is still valid, keep the obstacle
+            obstaclePositions.push({ x, y });
+            obstaclesPlaced++;
+          } else {
+            // Obstacle would block the path, remove it
+            this.grid[y][x] = TileType.FLOOR;
+            pathBlockedCount++;
+          }
         }
       }
 
       attempts++;
+    }
+
+    // Log if we had to skip many obstacles due to path blocking
+    if (pathBlockedCount > 0) {
+      console.log(`🚧 Dungeon generator: Skipped ${pathBlockedCount} obstacles that would block the path`);
     }
   }
 }
