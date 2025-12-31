@@ -3,10 +3,8 @@ const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 const playerCountEl = document.getElementById('playerCount');
 const roomIdEl = document.getElementById('roomId');
-const currentLevelEl = document.getElementById('currentLevel');
-const totalLevelsEl = document.getElementById('totalLevels');
-const levelKillsEl = document.getElementById('levelKills');
-const killsNeededEl = document.getElementById('killsNeeded');
+const mapDepthEl = document.getElementById('mapDepth');
+const totalKillsEl = document.getElementById('totalKills');
 const playerLivesEl = document.getElementById('playerLives');
 
 // Network monitoring
@@ -497,55 +495,58 @@ class DungeonGenerator {
     }
   }
 
-  placeObstacles(spawnX, spawnY, exitX, exitY, difficulty) {
-    // Calculate number of obstacles based on difficulty
-    // More obstacles = harder to navigate
-    const totalFloorTiles = this.grid.flat().filter(tile => tile === TileType.FLOOR).length;
-    const obstaclePercentage = Math.min(0.05 + (difficulty * 0.02), 0.15); // 5-15% of floor tiles
-    const numObstacles = Math.floor(totalFloorTiles * obstaclePercentage);
+  /**
+   * Get difficulty parameters for a given map depth (must match server!)
+   */
+  getDifficultyForDepth(mapDepth) {
+    const DIFFICULTY_CONFIG = {
+      baseBotsCount: 5,
+      baseBotHealth: 100,
+      baseBotSpeed: 333,
+      baseObstaclePercent: 5,
+      botsPerDepth: 2,
+      healthPerDepth: 25,
+      speedReductionPerDepth: 15,
+      obstaclePercentPerDepth: 1,
+      maxBots: 30,
+      maxHealth: 300,
+      minSpeed: 150,
+      maxObstaclePercent: 15,
+    };
+    
+    return {
+      botCount: Math.min(
+        DIFFICULTY_CONFIG.baseBotsCount + (mapDepth * DIFFICULTY_CONFIG.botsPerDepth),
+        DIFFICULTY_CONFIG.maxBots
+      ),
+      botHealth: Math.min(
+        DIFFICULTY_CONFIG.baseBotHealth + (mapDepth * DIFFICULTY_CONFIG.healthPerDepth),
+        DIFFICULTY_CONFIG.maxHealth
+      ),
+      botSpeed: Math.max(
+        DIFFICULTY_CONFIG.baseBotSpeed - (mapDepth * DIFFICULTY_CONFIG.speedReductionPerDepth),
+        DIFFICULTY_CONFIG.minSpeed
+      ),
+      obstaclePercent: Math.min(
+        DIFFICULTY_CONFIG.baseObstaclePercent + (mapDepth * DIFFICULTY_CONFIG.obstaclePercentPerDepth),
+        DIFFICULTY_CONFIG.maxObstaclePercent
+      ) / 100, // Convert to decimal (0.05, 0.06, etc.)
+    };
+  }
 
-    // Track obstacle positions for spacing checks
-    const obstaclePositions = [];
-    const MIN_OBSTACLE_SPACING = 4; // Minimum tiles between obstacles
-
-    let obstaclesPlaced = 0;
-    let attempts = 0;
-    const maxAttempts = numObstacles * 10;
-
-    while (obstaclesPlaced < numObstacles && attempts < maxAttempts) {
-      const x = this.randomInt(0, this.width - 1);
-      const y = this.randomInt(0, this.height - 1);
-
-      // Only place on floor tiles, not on spawn or exit
-      if (
-        this.grid[y][x] === TileType.FLOOR &&
-        !(x === spawnX && y === spawnY) &&
-        !(x === exitX && y === exitY)
-      ) {
-        // Don't place obstacles directly adjacent to spawn or exit
-        const isNearSpawn = Math.abs(x - spawnX) + Math.abs(y - spawnY) <= 3; // Manhattan distance
-        const isNearExit = Math.abs(x - exitX) + Math.abs(y - exitY) <= 3;
-
-        // Check spacing from other obstacles
-        const tooCloseToOtherObstacle = obstaclePositions.some(obs =>
-          Math.abs(x - obs.x) + Math.abs(y - obs.y) < MIN_OBSTACLE_SPACING
-        );
-
-        if (!isNearSpawn && !isNearExit && !tooCloseToOtherObstacle) {
-          // Place the obstacle
-          this.grid[y][x] = TileType.OBSTACLE;
-          obstaclePositions.push({ x, y });
-          obstaclesPlaced++;
-        }
-      }
-
-      attempts++;
-    }
+  /**
+   * Calculate Manhattan distance between two points
+   */
+  getManhattanDistance(x1, y1, x2, y2) {
+    return Math.abs(x1 - x2) + Math.abs(y1 - y2);
   }
 
   generate(mapDepth = 0) {
     this.grid = this.createEmptyGrid();
     this.rooms = [];
+
+    // Get difficulty parameters based on map depth (must match server!)
+    const difficultyParams = this.getDifficultyForDepth(mapDepth);
 
     const numRooms = Math.min(8 + mapDepth, 15);
     const minRoomSize = 6;
@@ -577,25 +578,22 @@ class DungeonGenerator {
     const firstRoom = this.rooms[0];
     const spawnX = Math.floor(firstRoom.x + firstRoom.width / 2);
     const spawnY = Math.floor(firstRoom.y + firstRoom.height / 2);
-    this.grid[spawnY][spawnX] = TileType.SPAWN;
 
-    // Place entry portal or home marker at spawn location based on depth
-    let entryPortalPoint = null;
+    // Entry portal or home marker at spawn point based on map depth
     if (mapDepth === 0) {
-      // First map: place gold home marker (can't go back)
+      // First map - place HOME_MARKER (gold) - can't go back
       this.grid[spawnY][spawnX] = TileType.HOME_MARKER;
     } else {
-      // Subsequent maps: place purple entry portal (go back)
+      // Subsequent maps - place ENTRY_PORTAL (purple) - return to previous map
       this.grid[spawnY][spawnX] = TileType.ENTRY_PORTAL;
-      entryPortalPoint = { x: spawnX, y: spawnY };
     }
 
     // Find a suitable exit portal point that's far from spawn
     // Minimum distance should be at least 60 tiles for a good journey on 120x120 map
     const MIN_DISTANCE = 60;
     let exitRoomIndex = this.rooms.length - 1;
-    let exitX = 0;
-    let exitY = 0;
+    let exitPortalX = 0;
+    let exitPortalY = 0;
 
     // Start from the last room and work backwards if needed
     while (exitRoomIndex >= 0) {
@@ -603,12 +601,12 @@ class DungeonGenerator {
       const tempExitX = Math.floor(exitRoom.x + exitRoom.width / 2);
       const tempExitY = Math.floor(exitRoom.y + exitRoom.height / 2);
 
-      const distance = Math.abs(spawnX - tempExitX) + Math.abs(spawnY - tempExitY); // Manhattan distance
+      const distance = this.getManhattanDistance(spawnX, spawnY, tempExitX, tempExitY);
 
       if (distance >= MIN_DISTANCE) {
         // Found a good exit location
-        exitX = tempExitX;
-        exitY = tempExitY;
+        exitPortalX = tempExitX;
+        exitPortalY = tempExitY;
         break;
       }
 
@@ -619,17 +617,15 @@ class DungeonGenerator {
     if (exitRoomIndex < 0) {
       exitRoomIndex = this.rooms.length - 1;
       const exitRoom = this.rooms[exitRoomIndex];
-      exitX = Math.floor(exitRoom.x + exitRoom.width / 2);
-      exitY = Math.floor(exitRoom.y + exitRoom.height / 2);
+      exitPortalX = Math.floor(exitRoom.x + exitRoom.width / 2);
+      exitPortalY = Math.floor(exitRoom.y + exitRoom.height / 2);
     }
 
-    // Place green exit portal (go to next map)
-    this.grid[exitY][exitX] = TileType.EXIT_PORTAL;
-    const exitPortalPoint = { x: exitX, y: exitY };
+    // Place EXIT_PORTAL (green) - leads to next map
+    this.grid[exitPortalY][exitPortalX] = TileType.EXIT_PORTAL;
 
-    // Place obstacles throughout the dungeon (density based on depth)
-    const obstaclePercent = 5 + mapDepth; // 5% base + 1% per depth
-    this.placeObstaclesWithPercent(spawnX, spawnY, exitX, exitY, obstaclePercent);
+    // Place obstacles throughout the dungeon (using depth-scaled percentage)
+    this.placeObstaclesWithPercent(spawnX, spawnY, exitPortalX, exitPortalY, difficultyParams.obstaclePercent);
 
     return {
       grid: this.grid,
@@ -637,36 +633,47 @@ class DungeonGenerator {
       width: this.width,
       height: this.height,
       spawnPoint: { x: spawnX, y: spawnY },
-      exitPoint: { x: exitX, y: exitY },
-      entryPortalPoint: entryPortalPoint,
-      exitPortalPoint: exitPortalPoint,
+      exitPoint: { x: exitPortalX, y: exitPortalY },
+      entryPortalPoint: mapDepth === 0 ? null : { x: spawnX, y: spawnY },
+      exitPortalPoint: { x: exitPortalX, y: exitPortalY },
       mapDepth: mapDepth,
       transportPoints: [] // Empty for client, server tracks actual transports
     };
   }
 
   /**
-   * Place obstacles with a specific percentage
+   * Place obstacles with a specific percentage (must match server exactly!)
    */
-  placeObstaclesWithPercent(spawnX, spawnY, exitX, exitY, percent) {
+  placeObstaclesWithPercent(spawnX, spawnY, exitX, exitY, obstaclePercent) {
     const totalFloorTiles = this.grid.flat().filter(tile => tile === TileType.FLOOR).length;
-    const obstacleCount = Math.floor(totalFloorTiles * (percent / 100));
-    let placed = 0;
-    let attempts = 0;
-    const maxAttempts = obstacleCount * 3;
+    const numObstacles = Math.floor(totalFloorTiles * obstaclePercent);
 
-    while (placed < obstacleCount && attempts < maxAttempts) {
+    // Track obstacle positions for spacing checks (must match server!)
+    const obstaclePositions = [];
+    const MIN_OBSTACLE_SPACING = 4;
+
+    let obstaclesPlaced = 0;
+    let attempts = 0;
+    const maxAttempts = numObstacles * 10;
+
+    while (obstaclesPlaced < numObstacles && attempts < maxAttempts) {
       const x = this.randomInt(0, this.width - 1);
       const y = this.randomInt(0, this.height - 1);
 
-      if (
-        this.grid[y][x] === TileType.FLOOR &&
-        Math.abs(x - spawnX) > 3 && Math.abs(y - spawnY) > 3 &&
-        Math.abs(x - exitX) > 3 && Math.abs(y - exitY) > 3
-      ) {
-        this.grid[y][x] = TileType.OBSTACLE;
-        placed++;
+      if (this.grid[y][x] === TileType.FLOOR) {
+        const isNearSpawn = this.getManhattanDistance(x, y, spawnX, spawnY) <= 3;
+        const isNearExit = this.getManhattanDistance(x, y, exitX, exitY) <= 3;
+        const tooCloseToOtherObstacle = obstaclePositions.some(obs =>
+          this.getManhattanDistance(x, y, obs.x, obs.y) < MIN_OBSTACLE_SPACING
+        );
+
+        if (!isNearSpawn && !isNearExit && !tooCloseToOtherObstacle) {
+          this.grid[y][x] = TileType.OBSTACLE;
+          obstaclePositions.push({ x, y });
+          obstaclesPlaced++;
+        }
       }
+
       attempts++;
     }
   }
@@ -917,17 +924,14 @@ async function connect(roomName, create = false, playerName = '') {
         updateWaitingRoomUI();
       }
 
-      // Update level display
-      if (room.state.currentLevel !== undefined && room.state.totalLevels !== undefined) {
-        currentLevelEl.textContent = room.state.currentLevel;
-        totalLevelsEl.textContent = room.state.totalLevels;
+      // Update map depth display
+      if (room.state.currentMapDepth !== undefined) {
+        mapDepthEl.textContent = room.state.currentMapDepth;
       }
 
-      // Update kill progress
-      if (room.state.currentLevelKills !== undefined && room.state.killsNeededForNextLevel !== undefined) {
-        console.log('🎯 Kill progress update:', room.state.currentLevelKills, '/', room.state.killsNeededForNextLevel);
-        levelKillsEl.textContent = room.state.currentLevelKills;
-        killsNeededEl.textContent = room.state.killsNeededForNextLevel;
+      // Update total kills display
+      if (room.state.totalKills !== undefined) {
+        totalKillsEl.textContent = room.state.totalKills;
       }
 
       // Update player lives
@@ -1082,10 +1086,8 @@ async function connect(roomName, create = false, playerName = '') {
         }
 
         // Initialize UI with current state
-        currentLevelEl.textContent = state.currentLevel || 1;
-        totalLevelsEl.textContent = state.totalLevels || 5;
-        levelKillsEl.textContent = state.currentLevelKills || 0;
-        killsNeededEl.textContent = state.killsNeededForNextLevel || 10;
+        mapDepthEl.textContent = state.currentMapDepth || 0;
+        totalKillsEl.textContent = state.totalKills || 0;
         playerCountEl.textContent = state.players ? state.players.size : 0;
 
         const myPlayer = state.players.get(mySessionId);
@@ -1128,25 +1130,10 @@ async function connect(roomName, create = false, playerName = '') {
       });
     });
 
-    // Listen for level advancement (kill-based progression)
+    // Listen for legacy level advancement (deprecated - kept for backwards compatibility)
     room.onMessage('levelAdvanced', (message) => {
-      console.log('🎯 Level advanced!', message);
-
-      // Update level display
-      currentLevelEl.textContent = message.newLevel;
-      totalLevelsEl.textContent = message.totalLevels;
-      levelKillsEl.textContent = '0';
-      killsNeededEl.textContent = message.killsNeeded;
-
-      // Show notification
-      if (message.triggerPlayer === mySessionId) {
-        statusEl.textContent = `🎉 Level ${message.newLevel}! You completed the level! Kill ${message.killsNeeded} bots!`;
-      } else {
-        statusEl.textContent = `➡️ Level ${message.newLevel}! Kill ${message.killsNeeded} bots!`;
-      }
-
-      // Note: We keep the same dungeon layout, just increase difficulty
-      render();
+      console.log('⚠️ Received deprecated levelAdvanced message:', message);
+      // This message type is deprecated - multi-map system uses mapChanged instead
     });
 
     // Listen for map change (portal navigation between depths)
@@ -1159,9 +1146,14 @@ async function connect(roomName, create = false, playerName = '') {
       dungeonGrid = newDungeonData.grid;
 
       // Update map depth display
-      const mapDepthEl = document.getElementById('mapDepth');
       if (mapDepthEl) {
         mapDepthEl.textContent = message.newDepth;
+      }
+
+      // Update total kills display (reset for new map or keep cumulative?)
+      // Keep cumulative kills across maps for now
+      if (totalKillsEl && room.state.totalKills !== undefined) {
+        totalKillsEl.textContent = room.state.totalKills;
       }
 
       // Show notification based on direction
@@ -1178,12 +1170,12 @@ async function connect(roomName, create = false, playerName = '') {
       render();
     });
 
-    // Listen for game completion (all 5 levels done)
+    // Listen for game completion (reached max depth or other win condition)
     room.onMessage('gameCompleted', (message) => {
       console.log('🎊 Game completed!', message);
 
       if (message.triggerPlayer === mySessionId) {
-        statusEl.textContent = `🎊 YOU WON! Completed all ${room.state.totalLevels} levels! Total kills: ${message.totalKills}`;
+        statusEl.textContent = `🎊 YOU WON! Total kills: ${message.totalKills}`;
       } else {
         statusEl.textContent = '🎊 Game completed by another player! Restarting...';
       }
@@ -1204,12 +1196,12 @@ async function connect(roomName, create = false, playerName = '') {
         console.log('Game Over - Out of lives');
 
         // Show game over modal with stats
-        const finalLevelEl = document.getElementById('finalLevel');
+        const finalDepthEl = document.getElementById('finalDepth');
         const finalKillsEl = document.getElementById('finalKills');
         const gameOverModal = document.getElementById('gameOverModal');
 
-        finalLevelEl.textContent = room.state.currentLevel;
-        finalKillsEl.textContent = room.state.currentLevelKills;
+        finalDepthEl.textContent = room.state.currentMapDepth || 0;
+        finalKillsEl.textContent = room.state.totalKills || 0;
         gameOverModal.classList.remove('hidden');
       }
     });
@@ -1245,14 +1237,29 @@ function updateDebugPanel() {
   
   const container = document.getElementById('botStatsContainer');
   
-  if (room.state.bots.size === 0) {
-    container.innerHTML = '<div class="bot-stat-placeholder">No bots spawned yet</div>';
+  // Get player's current map key for filtering
+  const myPlayer = room.state.players.get(mySessionId);
+  const playerMapKey = myPlayer ? `${myPlayer.currentMapDepth}_${myPlayer.currentMapSeed}` : null;
+  
+  // Count bots on current map
+  let botsOnCurrentMap = 0;
+  room.state.bots.forEach((bot) => {
+    if (!playerMapKey || bot.mapKey === playerMapKey) {
+      botsOnCurrentMap++;
+    }
+  });
+  
+  if (botsOnCurrentMap === 0) {
+    container.innerHTML = '<div class="bot-stat-placeholder">No bots on this map</div>';
     return;
   }
   
   container.innerHTML = '';
   
   room.state.bots.forEach((bot, botId) => {
+    // Filter: only show bots on player's current map
+    if (playerMapKey && bot.mapKey !== playerMapKey) return;
+    
     const path = botPaths[botId];
     const pathLength = path ? path.length : 0;
     const status = pathLength === 0 ? '❌ No Path' : '✅ Moving';
@@ -1449,7 +1456,14 @@ function render() {
   }
 
   // Draw bots with health bars (using interpolation for smooth movement)
+  // Filter: only render bots on player's current map
+  const myPlayerForBots = room.state.players.get(mySessionId);
+  const playerMapKey = myPlayerForBots ? `${myPlayerForBots.currentMapDepth}_${myPlayerForBots.currentMapSeed}` : null;
+  
   room.state.bots.forEach((bot) => {
+    // Skip bots on other maps
+    if (playerMapKey && bot.mapKey !== playerMapKey) return;
+    
     // Get interpolated position for smooth rendering
     const pos = getInterpolatedBotPosition(bot);
     // Bot positions can be fractional for smooth interpolation (this is OK)
@@ -1503,7 +1517,11 @@ function render() {
   });
 
   // Draw bullets with trail effect
+  // Filter: only render bullets on player's current map (reuse playerMapKey from above)
   room.state.bullets.forEach((bullet) => {
+    // Skip bullets on other maps
+    if (playerMapKey && bullet.mapKey !== playerMapKey) return;
+    
     const screenX = (bullet.x - cameraX) * TILE_SIZE;
     const screenY = (bullet.y - cameraY) * TILE_SIZE;
 
@@ -1885,7 +1903,7 @@ function onGameStarted(message) {
   console.log('🎮 Game started!', message);
   gameStarted = true;
   hideWaitingRoom();
-  statusEl.textContent = `Game started! Kill ${room.state.killsNeededForNextLevel} bots!`;
+  statusEl.textContent = `Game started! Explore the dungeon and kill bots!`;
 }
 
 // Handle host changed event

@@ -780,9 +780,8 @@
     <div id="hud">
       <div class="hud-left">
         <div class="hud-item hud-lives">&#9829; <span id="playerLives">3</span></div>
-        <div class="hud-item hud-level">L<span id="currentLevel">1</span>/<span id="totalLevels">5</span></div>
-        <div class="hud-item">K: <span id="levelKills">0</span>/<span id="killsNeeded">10</span></div>
-        <div class="hud-item" style="color: #9b59b6;">Map: <span id="mapDepth">0</span></div>
+        <div class="hud-item" style="color: #9b59b6;">Depth: <span id="mapDepth">0</span></div>
+        <div class="hud-item">Kills: <span id="totalKills">0</span></div>
       </div>
       <div class="hud-right">
         <div class="hud-item"><span id="playerCount">0</span> players</div>
@@ -837,7 +836,7 @@
       <div class="modal-title">GAME OVER</div>
       <p>You ran out of lives!</p>
       <p>
-        Level: <span id="finalLevel">1</span> |
+        Depth: <span id="finalDepth">0</span> |
         Kills: <span id="finalKills">0</span>
       </p>
       <button onclick="returnToLobby()">Return to Lobby</button>

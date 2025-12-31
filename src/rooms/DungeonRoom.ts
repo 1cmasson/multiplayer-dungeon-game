@@ -63,7 +63,7 @@ function generateNextSeed(currentSeed: number): number {
 export class DungeonRoom extends Room<DungeonState> {
   maxClients = 8;
   private dungeonData: any;
-  private levelSeeds: number[] = []; // Seeds for all 4 levels
+  private initialSeed: number = 0; // Seed for initial map generation
   private updateInterval: any; // Game loop
   private botIdCounter = 0;
   private bulletIdCounter = 0;
@@ -92,26 +92,15 @@ export class DungeonRoom extends Room<DungeonState> {
     this.setMetadata({
       roomName: this.state.roomName || 'Unnamed Room',
       hostName: 'Waiting for players...',
-      currentLevel: 1,
-      totalLevels: 5,
-      currentLevelKills: 0,
-      killsNeededForNextLevel: 10,
+      currentMapDepth: 0,
       gameStarted: false
     });
 
-    // Generate 4 unique seeds for 4 levels
-    const baseSeed = options.seed || Date.now();
-    for (let i = 0; i < 4; i++) {
-      this.levelSeeds.push(baseSeed + i * 1000); // Offset each seed
-    }
+    // Generate initial seed for map generation
+    this.initialSeed = options.seed || Date.now();
 
-    this.state.currentLevel = 1;
-    this.state.totalLevels = 5;
-    this.state.currentLevelKills = 0;
-    this.state.killsNeededForNextLevel = this.getKillsForLevel(1);
-
-    // Generate first level
-    this.generateLevel(1);
+    // Generate initial map (depth 0)
+    this.generateInitialMap();
 
     // Measure initial state size
     this.measureStateSize();
@@ -178,8 +167,8 @@ export class DungeonRoom extends Room<DungeonState> {
           break;
       }
 
-      // Check if move is valid (not a wall)
-      if (this.isValidMove(newX, newY)) {
+      // Check if move is valid (not a wall) - pass sessionId to check against correct map
+      if (this.isValidMove(newX, newY, client.sessionId)) {
         player.x = newX;
         player.y = newY;
 
@@ -224,10 +213,11 @@ export class DungeonRoom extends Room<DungeonState> {
       console.log(`🎮 Host ${client.sessionId} starting the game!`);
       this.state.gameStarted = true;
 
-      // Spawn bots now that game is starting
-      const botCount = this.enemyBotManager.getBotsForLevel(this.state.currentLevel);
-      this.enemyBotManager.spawnBots(botCount, this.state.players);
-      console.log('🤖 Spawned', this.state.bots.size, 'bots for level', this.state.currentLevel);
+      // Spawn bots now that game is starting (use depth-based difficulty)
+      const difficulty = getDifficultyForDepth(0);
+      const initialMapKey = this.getMapKey(0, this.state.seed);
+      this.enemyBotManager.spawnBots(difficulty.botCount, this.state.players, initialMapKey);
+      console.log('🤖 Spawned', this.state.bots.size, 'bots for map depth 0');
 
       // Get host player name for broadcast
       const hostPlayer = this.state.players.get(client.sessionId);
@@ -237,23 +227,20 @@ export class DungeonRoom extends Room<DungeonState> {
       this.setMetadata({
         roomName: this.state.roomName || 'Unnamed Room',
         hostName: hostName,
-        currentLevel: this.state.currentLevel,
-        totalLevels: this.state.totalLevels,
-        currentLevelKills: this.state.currentLevelKills,
-        killsNeededForNextLevel: this.state.killsNeededForNextLevel,
+        currentMapDepth: 0,
         gameStarted: true
       });
 
       // Broadcast game started to all clients
       this.broadcast('gameStarted', { 
         hostName: hostName,
-        botCount: botCount
+        botCount: difficulty.botCount
       });
 
       // Broadcast activity
       this.broadcast('activity', {
         type: 'level',
-        text: `Game started by ${hostName}! Kill ${this.state.killsNeededForNextLevel} bots!`
+        text: `Game started by ${hostName}! Explore the dungeon!`
       });
     });
   }
@@ -298,10 +285,7 @@ export class DungeonRoom extends Room<DungeonState> {
       this.setMetadata({
         roomName: this.state.roomName || 'Unnamed Room',
         hostName: player.name,
-        currentLevel: this.state.currentLevel,
-        totalLevels: this.state.totalLevels,
-        currentLevelKills: this.state.currentLevelKills,
-        killsNeededForNextLevel: this.state.killsNeededForNextLevel,
+        currentMapDepth: 0,
         gameStarted: this.state.gameStarted
       });
     }
@@ -319,14 +303,92 @@ export class DungeonRoom extends Room<DungeonState> {
     this.measureStateSize();
   }
 
-  onLeave(client: Client, consented: boolean) {
-    console.log(`${client.sessionId} left!`);
+  async onLeave(client: Client, consented: boolean) {
     const player = this.state.players.get(client.sessionId);
-    if (player) {
-      // Broadcast player left activity
+    const playerName = player?.name || client.sessionId;
+    
+    console.log(`${client.sessionId} left (consented: ${consented})`);
+    
+    // If player disconnected unexpectedly and has lives remaining, allow reconnection
+    if (!consented && player && player.lives > 0) {
+      // Broadcast that player disconnected (but might reconnect)
       this.broadcast('activity', {
         type: 'leave',
-        text: `${player.name} left the game`
+        text: `${playerName} disconnected (waiting for reconnection...)`
+      });
+      
+      try {
+        // Allow 60 seconds for reconnection
+        console.log(`⏳ Waiting up to 60s for ${client.sessionId} to reconnect...`);
+        await this.allowReconnection(client, 60);
+        
+        // Player reconnected successfully!
+        console.log(`✅ Player ${client.sessionId} reconnected!`);
+        
+        // Broadcast reconnection
+        this.broadcast('activity', {
+          type: 'join',
+          text: `${playerName} reconnected!`
+        });
+        
+        // Ensure their map is still active
+        const playerMapState = this.playerMapStates.get(client.sessionId);
+        if (playerMapState) {
+          const currentSeed = playerMapState.seedHistory.get(playerMapState.currentDepth);
+          if (currentSeed !== undefined) {
+            const mapKey = this.getMapKey(playerMapState.currentDepth, currentSeed);
+            
+            // Check if map still exists, if not regenerate it
+            if (!this.activeMaps.has(mapKey)) {
+              console.log(`🗺️ Regenerating map ${mapKey} for reconnected player`);
+              const cachedState = playerMapState.mapCache.get(playerMapState.currentDepth);
+              const activeMap = this.getOrCreateMap(playerMapState.currentDepth, currentSeed, cachedState);
+              activeMap.players.add(client.sessionId);
+              
+              // Spawn bots if needed
+              if (this.state.gameStarted && activeMap.bots.size === 0) {
+                const difficulty = getDifficultyForDepth(playerMapState.currentDepth);
+                activeMap.botManager.spawnBots(difficulty.botCount, this.state.players, mapKey);
+              }
+            } else {
+              // Map exists, just re-add player to it
+              const activeMap = this.activeMaps.get(mapKey);
+              if (activeMap) {
+                activeMap.players.add(client.sessionId);
+              }
+            }
+            
+            // Send map state to reconnected client
+            this.send(client, "mapChanged", {
+              newDepth: playerMapState.currentDepth,
+              newSeed: currentSeed,
+              spawnX: player.x,
+              spawnY: player.y,
+              entryPortalX: this.state.entryPortalX,
+              entryPortalY: this.state.entryPortalY,
+              exitPortalX: this.state.exitPortalX,
+              exitPortalY: this.state.exitPortalY
+            });
+          }
+        }
+        
+        return; // Don't clean up - player reconnected
+        
+      } catch (e) {
+        // Reconnection timed out or failed
+        console.log(`❌ Player ${client.sessionId} reconnection timed out`);
+        
+        // Broadcast that player is gone for good
+        this.broadcast('activity', {
+          type: 'leave',
+          text: `${playerName} left the game`
+        });
+      }
+    } else if (player) {
+      // Player left intentionally or had no lives
+      this.broadcast('activity', {
+        type: 'leave',
+        text: `${playerName} left the game`
       });
     }
     
@@ -373,10 +435,7 @@ export class DungeonRoom extends Room<DungeonState> {
         this.setMetadata({
           roomName: this.state.roomName || 'Unnamed Room',
           hostName: newHost?.name || 'Unknown',
-          currentLevel: this.state.currentLevel,
-          totalLevels: this.state.totalLevels,
-          currentLevelKills: this.state.currentLevelKills,
-          killsNeededForNextLevel: this.state.killsNeededForNextLevel,
+          currentMapDepth: this.state.currentMapDepth,
           gameStarted: this.state.gameStarted
         });
       }
@@ -405,7 +464,21 @@ export class DungeonRoom extends Room<DungeonState> {
       
       // Only update bots and check bot collisions if game has started
       if (this.state.gameStarted) {
-        this.enemyBotManager.updateBots(DELTA_TIME / 1000, this.state.players);
+        // Update bots for each active map that has players
+        this.activeMaps.forEach((activeMap, mapKey) => {
+          if (activeMap.players.size > 0) {
+            // Use the map's own bot manager with the map's dungeon data
+            activeMap.botManager.updateBots(DELTA_TIME / 1000, this.state.players, mapKey);
+          }
+        });
+        
+        // Also update bots using the global manager for the initial map (depth 0)
+        // This handles the case before any ActiveMap exists
+        if (this.activeMaps.size === 0) {
+          const initialMapKey = this.getMapKey(0, this.state.seed);
+          this.enemyBotManager.updateBots(DELTA_TIME / 1000, this.state.players, initialMapKey);
+        }
+        
         this.checkCollisions();
       }
     }, DELTA_TIME);
@@ -444,6 +517,15 @@ export class DungeonRoom extends Room<DungeonState> {
     const BULLET_SPEED = 7;
     bullet.velocityX = Math.cos(angle) * BULLET_SPEED;
     bullet.velocityY = Math.sin(angle) * BULLET_SPEED;
+    
+    // Set the map key based on the player's current map
+    const playerMapState = this.playerMapStates.get(playerId);
+    if (playerMapState) {
+      const currentSeed = playerMapState.seedHistory.get(playerMapState.currentDepth);
+      if (currentSeed !== undefined) {
+        bullet.mapKey = this.getMapKey(playerMapState.currentDepth, currentSeed);
+      }
+    }
 
     this.state.bullets.set(bullet.id, bullet);
   }
@@ -463,11 +545,21 @@ export class DungeonRoom extends Room<DungeonState> {
       const tileX = Math.floor(bullet.x);
       const tileY = Math.floor(bullet.y);
 
+      // Get the correct dungeon data for this bullet's map
+      let dungeonData = this.dungeonData; // Default to initial map
+      
+      if (bullet.mapKey) {
+        const activeMap = this.activeMaps.get(bullet.mapKey);
+        if (activeMap) {
+          dungeonData = activeMap.dungeonData;
+        }
+      }
+
       if (
         tileX < 0 || tileX >= this.state.width ||
         tileY < 0 || tileY >= this.state.height ||
-        this.dungeonData.grid[tileY][tileX] === TileType.WALL ||
-        this.dungeonData.grid[tileY][tileX] === TileType.OBSTACLE
+        dungeonData.grid[tileY][tileX] === TileType.WALL ||
+        dungeonData.grid[tileY][tileX] === TileType.OBSTACLE
       ) {
         bulletsToRemove.push(bulletId);
       }
@@ -482,171 +574,192 @@ export class DungeonRoom extends Room<DungeonState> {
 
 
   /**
-   * Check all collisions
+   * Check all collisions (per-map)
    */
   private checkCollisions(): void {
-    // Bullet vs Bot
-    const bulletResult = this.collisionManager.checkBulletVsBots(
-      this.state.bullets,
-      this.state.bots
-    );
+    // Process collisions for each active map
+    this.activeMaps.forEach((activeMap, mapKey) => {
+      if (activeMap.players.size === 0) return; // Skip maps with no players
+      
+      // Bullet vs Bot (using the map's collision manager)
+      const bulletResult = activeMap.collisionManager.checkBulletVsBots(
+        this.state.bullets,
+        this.state.bots,
+        mapKey
+      );
 
-    // Remove bullets and bots
-    bulletResult.bulletsToRemove.forEach(id => this.state.bullets.delete(id));
-    bulletResult.botsToRemove.forEach(id => this.state.bots.delete(id));
+      // Remove bullets and bots
+      bulletResult.bulletsToRemove.forEach(id => this.state.bullets.delete(id));
+      bulletResult.botsToRemove.forEach(id => this.state.bots.delete(id));
 
-    // Handle kill events
-    bulletResult.killEvents.forEach(event => {
-      const player = this.state.players.get(event.playerId);
-      if (player) {
-        player.score++;
+      // Handle kill events with split credit
+      bulletResult.killEvents.forEach(event => {
+        // Give credit to all players who damaged the bot
+        event.playerIds.forEach(playerId => {
+          const player = this.state.players.get(playerId);
+          if (player) {
+            player.score += event.creditPerPlayer;
+          }
+        });
+        
+        // Count as 1 total kill regardless of how many players contributed
         this.state.totalKills++;
-        this.state.currentLevelKills++;
 
-        console.log(`💀 Bot ${event.botId} killed by ${event.playerId}. Level kills: ${this.state.currentLevelKills}/${this.state.killsNeededForNextLevel}`);
+        // Log the kill
+        const playerNames = event.playerIds
+          .map(id => this.state.players.get(id)?.name || id)
+          .join(' & ');
+        
+        if (event.playerIds.length > 1) {
+          console.log(`💀 Bot ${event.botId} killed by ${playerNames} (split ${event.creditPerPlayer} each). Total kills: ${this.state.totalKills}`);
+        } else {
+          console.log(`💀 Bot ${event.botId} killed by ${playerNames}. Total kills: ${this.state.totalKills}`);
+        }
 
         // Broadcast kill activity
+        const activityText = event.playerIds.length > 1
+          ? `${playerNames} killed a bot together`
+          : `${playerNames} killed a bot`;
+        
         this.broadcast('activity', {
           type: 'kill',
-          text: `${player.name} killed a bot (${this.state.currentLevelKills}/${this.state.killsNeededForNextLevel})`
+          text: activityText
         });
 
-        if (this.state.currentLevelKills >= this.state.killsNeededForNextLevel) {
-          this.advanceToNextLevel(event.playerId);
-        } else {
-          // Spawn new bot
-          if (this.state.bots.size < this.enemyBotManager.getBotsForLevel(this.state.currentLevel)) {
-            this.enemyBotManager.spawnBots(1, this.state.players);
-            
-            // Broadcast bot spawn activity
-            this.broadcast('activity', {
-              type: 'spawn',
-              text: '1 bot spawned'
-            });
-          }
+        // Respawn bot to maintain difficulty (using the first player's map state for reference)
+        const firstPlayerId = event.playerIds[0];
+        const playerMapState = this.playerMapStates.get(firstPlayerId);
+        const currentDepth = playerMapState?.currentDepth ?? activeMap.depth;
+        const difficulty = getDifficultyForDepth(currentDepth);
+        
+        // Count bots on this specific map
+        let botsOnMap = 0;
+        this.state.bots.forEach(bot => {
+          if (bot.mapKey === mapKey) botsOnMap++;
+        });
+        
+        if (botsOnMap < difficulty.botCount) {
+          activeMap.botManager.spawnBots(1, this.state.players, mapKey);
         }
-      }
+      });
+
+      // Bot vs Player (using the map's collision manager)
+      const playerResult = activeMap.collisionManager.checkBotVsPlayers(
+        this.state.bots,
+        this.state.players,
+        mapKey
+      );
+
+      // Handle player hit events
+      playerResult.hitEvents.forEach(event => {
+        const player = this.state.players.get(event.playerId);
+        if (!player) return;
+
+        if (event.livesRemaining > 0) {
+          // Respawn player at the entry point of their current map
+          this.respawnPlayerAtMapEntry(event.playerId, activeMap);
+          
+          // Broadcast player hit activity
+          this.broadcast('activity', {
+            type: 'death',
+            text: `${player.name} lost a life! (${event.livesRemaining} remaining)`
+          });
+
+          this.broadcast("playerHit", {
+            playerId: event.playerId,
+            livesRemaining: event.livesRemaining,
+            invincibilitySeconds: 3
+          });
+        } else {
+          // Broadcast game over activity
+          this.broadcast('activity', {
+            type: 'death',
+            text: `${player.name} ran out of lives`
+          });
+
+          this.broadcast("gameOver", { playerId: event.playerId });
+        }
+      });
     });
-
-    // Bot vs Player
-    const playerResult = this.collisionManager.checkBotVsPlayers(
-      this.state.bots,
-      this.state.players
-    );
-
-    // Handle player hit events
-    playerResult.hitEvents.forEach(event => {
-      const player = this.state.players.get(event.playerId);
-      if (!player) return;
-
-      if (event.livesRemaining > 0) {
-        // Broadcast player hit activity
-        this.broadcast('activity', {
-          type: 'death',
-          text: `${player.name} lost a life! (${event.livesRemaining} remaining)`
-        });
-
-        this.broadcast("playerHit", {
-          playerId: event.playerId,
-          livesRemaining: event.livesRemaining,
-          invincibilitySeconds: 3
-        });
-      } else {
-        // Broadcast game over activity
-        this.broadcast('activity', {
-          type: 'death',
-          text: `${player.name} ran out of lives`
-        });
-
-        this.broadcast("gameOver", { playerId: event.playerId });
-      }
-    });
-  }
-
-  /**
-   * Advance all players to the next level
-   */
-  private advanceToNextLevel(triggerPlayerSessionId: string): void {
-    const nextLevel = this.state.currentLevel + 1;
-    const player = this.state.players.get(triggerPlayerSessionId);
-
-    if (nextLevel > this.state.totalLevels) {
-      // Completed all levels!
-      console.log(`🎉 Player ${triggerPlayerSessionId} completed all ${this.state.totalLevels} levels!`);
+    
+    // Fallback: if no active maps exist yet (edge case during initialization),
+    // use the global collision manager for the initial map
+    if (this.activeMaps.size === 0) {
+      const initialMapKey = this.getMapKey(0, this.state.seed);
       
-      // Broadcast game completion activity
-      this.broadcast('activity', {
-        type: 'level',
-        text: `${player?.name || 'A player'} completed all ${this.state.totalLevels} levels!`
+      const bulletResult = this.collisionManager.checkBulletVsBots(
+        this.state.bullets,
+        this.state.bots,
+        initialMapKey
+      );
+
+      bulletResult.bulletsToRemove.forEach(id => this.state.bullets.delete(id));
+      bulletResult.botsToRemove.forEach(id => this.state.bots.delete(id));
+
+      bulletResult.killEvents.forEach(event => {
+        event.playerIds.forEach(playerId => {
+          const player = this.state.players.get(playerId);
+          if (player) {
+            player.score += event.creditPerPlayer;
+          }
+        });
+        this.state.totalKills++;
+        
+        // Respawn bot
+        const difficulty = getDifficultyForDepth(0);
+        let botsOnMap = 0;
+        this.state.bots.forEach(bot => {
+          if (bot.mapKey === initialMapKey) botsOnMap++;
+        });
+        
+        if (botsOnMap < difficulty.botCount) {
+          this.enemyBotManager.spawnBots(1, this.state.players, initialMapKey);
+        }
       });
 
-      this.broadcast("gameCompleted", {
-        triggerPlayer: triggerPlayerSessionId,
-        totalKills: this.state.totalKills
+      const playerResult = this.collisionManager.checkBotVsPlayers(
+        this.state.bots,
+        this.state.players,
+        initialMapKey
+      );
+
+      playerResult.hitEvents.forEach(event => {
+        const player = this.state.players.get(event.playerId);
+        if (!player) return;
+
+        if (event.livesRemaining > 0) {
+          // Respawn at spawn point for initial map (depth 0)
+          player.x = this.dungeonData.spawnPoint.x;
+          player.y = this.dungeonData.spawnPoint.y;
+          console.log(`🔄 Player ${event.playerId} respawning at spawn point (${player.x}, ${player.y}) on depth 0`);
+          
+          this.broadcast('activity', {
+            type: 'death',
+            text: `${player.name} lost a life! (${event.livesRemaining} remaining)`
+          });
+
+          this.broadcast("playerHit", {
+            playerId: event.playerId,
+            livesRemaining: event.livesRemaining,
+            invincibilitySeconds: 3
+          });
+        } else {
+          this.broadcast('activity', {
+            type: 'death',
+            text: `${player.name} ran out of lives`
+          });
+
+          this.broadcast("gameOver", { playerId: event.playerId });
+        }
       });
-
-      // Restart from level 1
-      this.state.currentLevel = 1;
-      this.state.currentLevelKills = 0;
-      this.state.killsNeededForNextLevel = this.getKillsForLevel(1);
-      this.generateLevel(1);
-    } else {
-      // Advance to next level
-      console.log(`🎯 Level ${this.state.currentLevel} complete! Advancing to Level ${nextLevel}...`);
-      
-      // Broadcast level advance activity
-      this.broadcast('activity', {
-        type: 'level',
-        text: `Level ${nextLevel} started! ${player?.name || 'A player'} completed level ${this.state.currentLevel}!`
-      });
-
-      this.state.currentLevel = nextLevel;
-      this.state.currentLevelKills = 0;
-      this.state.killsNeededForNextLevel = this.getKillsForLevel(nextLevel);
-
-      // Keep same dungeon but increase difficulty (or regenerate)
-      // this.generateLevel(nextLevel);
     }
-
-    // Clear all existing bots and spawn new ones with updated health for new level
-    this.enemyBotManager.clearAllBots();
-    this.enemyBotManager.spawnBots(
-      this.enemyBotManager.getBotsForLevel(this.state.currentLevel),
-      this.state.players
-    );
-
-    // Move all players to spawn point (ensure integer coordinates)
-    this.state.players.forEach((player) => {
-      player.x = Math.floor(this.dungeonData.spawnPoint.x);
-      player.y = Math.floor(this.dungeonData.spawnPoint.y);
-    });
-
-    // Update metadata for lobby
-    const hostPlayer = this.state.players.size > 0 ? Array.from(this.state.players.values())[0] : null;
-    this.setMetadata({
-      roomName: this.state.roomName || 'Unnamed Room',
-      hostName: hostPlayer?.name || 'Unknown',
-      currentLevel: this.state.currentLevel,
-      totalLevels: this.state.totalLevels,
-      currentLevelKills: this.state.currentLevelKills,
-      killsNeededForNextLevel: this.state.killsNeededForNextLevel
-    });
-
-    // Broadcast level change to all clients
-    this.broadcast("levelAdvanced", {
-      newLevel: this.state.currentLevel,
-      totalLevels: this.state.totalLevels,
-      killsNeeded: this.state.killsNeededForNextLevel,
-      triggerPlayer: triggerPlayerSessionId
-    });
   }
 
   /**
-   * Generate a specific level (legacy - now uses map depth 0 for initial generation)
+   * Generate initial map (depth 0)
    */
-  private generateLevel(level: number): void {
-    const seed = this.levelSeeds[level - 1];
-    const generator = new DungeonGenerator(120, 120, seed);
+  private generateInitialMap(): void {
+    const generator = new DungeonGenerator(120, 120, this.initialSeed);
     // Use mapDepth 0 for initial map generation
     this.dungeonData = generator.generate(0);
 
@@ -673,7 +786,7 @@ export class DungeonRoom extends Room<DungeonState> {
       this.state.activeTransports.push(transport);
     });
 
-    console.log(`\n🎮 LEVEL ${level} GENERATED`);
+    console.log(`\n🎮 INITIAL MAP GENERATED`);
     console.log(`   Rooms: ${this.dungeonData.rooms.length}`);
     console.log(`   Seed: ${this.state.seed}`);
     console.log(`   Map Depth: 0`);
@@ -695,8 +808,22 @@ export class DungeonRoom extends Room<DungeonState> {
       const transport = this.state.activeTransports[transportIndex];
       console.log(`Player ${sessionId} used transport at (${transport.x}, ${transport.y})`);
 
-      // Teleport player to a random walkable location
-      const newLocation = this.findRandomWalkableLocation();
+      // Get the correct dungeon data for this player's current map
+      let dungeonData = this.dungeonData; // Default to initial map
+      const playerMapState = this.playerMapStates.get(sessionId);
+      if (playerMapState) {
+        const currentSeed = playerMapState.seedHistory.get(playerMapState.currentDepth);
+        if (currentSeed !== undefined) {
+          const mapKey = this.getMapKey(playerMapState.currentDepth, currentSeed);
+          const activeMap = this.activeMaps.get(mapKey);
+          if (activeMap) {
+            dungeonData = activeMap.dungeonData;
+          }
+        }
+      }
+
+      // Teleport player to a random walkable location on their current map
+      const newLocation = this.findRandomWalkableLocation(sessionId);
       if (newLocation) {
         // Enforce integer coordinates (belt-and-suspenders approach)
         player.x = Math.floor(newLocation.x);
@@ -712,8 +839,8 @@ export class DungeonRoom extends Room<DungeonState> {
         });
       }
 
-      // Mark the old transport location as inactive (blue tile)
-      this.dungeonData.grid[transport.y][transport.x] = TileType.TRANSPORT_INACTIVE;
+      // Mark the old transport location as inactive (blue tile) on the correct map
+      dungeonData.grid[transport.y][transport.x] = TileType.TRANSPORT_INACTIVE;
 
       // Broadcast to all clients that this transport was used
       this.broadcast("transportUsed", { x: transport.x, y: transport.y });
@@ -721,8 +848,8 @@ export class DungeonRoom extends Room<DungeonState> {
       // Remove this transport from active list
       this.state.activeTransports.splice(transportIndex, 1);
 
-      // Spawn a new transport elsewhere
-      const newTransport = this.spawnNewTransport();
+      // Spawn a new transport elsewhere on the player's current map
+      const newTransport = this.spawnNewTransport(sessionId);
       if (newTransport) {
         this.state.activeTransports.push(newTransport);
         console.log(`  → New transport spawned at (${newTransport.x}, ${newTransport.y})`);
@@ -733,7 +860,24 @@ export class DungeonRoom extends Room<DungeonState> {
   /**
    * Find a random walkable location on the map
    */
-  private findRandomWalkableLocation(): { x: number; y: number } | null {
+  private findRandomWalkableLocation(sessionId?: string): { x: number; y: number } | null {
+    // Get the correct dungeon data for this player's current map
+    let dungeonData = this.dungeonData; // Default to initial map
+    
+    if (sessionId) {
+      const playerMapState = this.playerMapStates.get(sessionId);
+      if (playerMapState) {
+        const currentSeed = playerMapState.seedHistory.get(playerMapState.currentDepth);
+        if (currentSeed !== undefined) {
+          const mapKey = this.getMapKey(playerMapState.currentDepth, currentSeed);
+          const activeMap = this.activeMaps.get(mapKey);
+          if (activeMap) {
+            dungeonData = activeMap.dungeonData;
+          }
+        }
+      }
+    }
+    
     let attempts = 0;
     const maxAttempts = 100;
 
@@ -741,7 +885,7 @@ export class DungeonRoom extends Room<DungeonState> {
       const tileX = Math.floor(Math.random() * this.state.width);
       const tileY = Math.floor(Math.random() * this.state.height);
 
-      const tile = this.dungeonData.grid[tileY][tileX];
+      const tile = dungeonData.grid[tileY][tileX];
       if (tile === TileType.FLOOR || tile === TileType.SPAWN) {
         // Return integer tile coordinates (client will handle visual centering)
         return { x: tileX, y: tileY };
@@ -758,7 +902,24 @@ export class DungeonRoom extends Room<DungeonState> {
   /**
    * Spawn a new transport at a random floor location
    */
-  private spawnNewTransport(): Transport | null {
+  private spawnNewTransport(sessionId?: string): Transport | null {
+    // Get the correct dungeon data for this player's current map
+    let dungeonData = this.dungeonData; // Default to initial map
+    
+    if (sessionId) {
+      const playerMapState = this.playerMapStates.get(sessionId);
+      if (playerMapState) {
+        const currentSeed = playerMapState.seedHistory.get(playerMapState.currentDepth);
+        if (currentSeed !== undefined) {
+          const mapKey = this.getMapKey(playerMapState.currentDepth, currentSeed);
+          const activeMap = this.activeMaps.get(mapKey);
+          if (activeMap) {
+            dungeonData = activeMap.dungeonData;
+          }
+        }
+      }
+    }
+    
     let attempts = 0;
     const maxAttempts = 100;
 
@@ -767,10 +928,10 @@ export class DungeonRoom extends Room<DungeonState> {
       const y = Math.floor(Math.random() * this.state.height);
 
       // Must be on floor, not near spawn/exit, and not on existing transport
-      const tile = this.dungeonData.grid[y][x];
+      const tile = dungeonData.grid[y][x];
       const isFloor = tile === TileType.FLOOR;
-      const notNearSpawn = Math.abs(x - this.dungeonData.spawnPoint.x) > 3 ||
-                           Math.abs(y - this.dungeonData.spawnPoint.y) > 3;
+      const notNearSpawn = Math.abs(x - dungeonData.spawnPoint.x) > 3 ||
+                           Math.abs(y - dungeonData.spawnPoint.y) > 3;
       const notNearExit = Math.abs(x - this.state.exitX) > 3 ||
                           Math.abs(y - this.state.exitY) > 3;
       const notOnExistingTransport = !this.state.activeTransports.some(t => t.x === x && t.y === y);
@@ -788,7 +949,7 @@ export class DungeonRoom extends Room<DungeonState> {
     return null;
   }
 
-  private isValidMove(x: number, y: number): boolean {
+  private isValidMove(x: number, y: number, sessionId?: string): boolean {
     if (x < 0 || x >= this.state.width || y < 0 || y >= this.state.height) {
       return false;
     }
@@ -797,8 +958,25 @@ export class DungeonRoom extends Room<DungeonState> {
     const gridX = Math.floor(x);
     const gridY = Math.floor(y);
 
-    // Check against server-side dungeon data
-    const tile = this.dungeonData.grid[gridY][gridX];
+    // Get the correct dungeon data for this player's current map
+    let dungeonData = this.dungeonData; // Default to initial map
+    
+    if (sessionId) {
+      const playerMapState = this.playerMapStates.get(sessionId);
+      if (playerMapState) {
+        const currentSeed = playerMapState.seedHistory.get(playerMapState.currentDepth);
+        if (currentSeed !== undefined) {
+          const mapKey = this.getMapKey(playerMapState.currentDepth, currentSeed);
+          const activeMap = this.activeMaps.get(mapKey);
+          if (activeMap) {
+            dungeonData = activeMap.dungeonData;
+          }
+        }
+      }
+    }
+
+    // Check against the correct map's dungeon data
+    const tile = dungeonData.grid[gridY][gridX];
 
     // Can walk on floor, spawn, exit, inactive transports, and portal tiles - but NOT obstacles or walls
     return tile === TileType.FLOOR || 
@@ -824,8 +1002,7 @@ export class DungeonRoom extends Room<DungeonState> {
         height: this.state.height,
         exitX: this.state.exitX,
         exitY: this.state.exitY,
-        currentLevel: this.state.currentLevel,
-        totalLevels: this.state.totalLevels,
+        currentMapDepth: this.state.currentMapDepth,
         players: Array.from(this.state.players.entries()).map(([id, p]) => ({
           id,
           x: p.x,
@@ -853,16 +1030,6 @@ export class DungeonRoom extends Room<DungeonState> {
     const usage = process.memoryUsage();
     return `RSS: ${(usage.rss / 1024 / 1024).toFixed(2)} MB, ` +
            `Heap: ${(usage.heapUsed / 1024 / 1024).toFixed(2)} MB / ${(usage.heapTotal / 1024 / 1024).toFixed(2)} MB`;
-  }
-
-  /**
-   * Get kills needed for a specific level
-   */
-  private getKillsForLevel(level: number): number {
-    if (level === 1) return 10;
-    if (level === 2) return 15;
-    // Levels 3-5: increment by 5 (20, 25, 30)
-    return 15 + (level - 2) * 5;
   }
 
   // ==========================================
@@ -929,7 +1096,8 @@ export class DungeonRoom extends Room<DungeonState> {
    * Restore bots from cached state (when player returns to a previously visited map)
    */
   private restoreBotsFromCache(activeMap: ActiveMap, cachedState: CachedMapState): void {
-    console.log(`♻️ Restoring ${cachedState.bots.length} bots from cache for depth ${cachedState.depth}`);
+    const mapKey = this.getMapKey(activeMap.depth, activeMap.seed);
+    console.log(`♻️ Restoring ${cachedState.bots.length} bots from cache for depth ${cachedState.depth} (mapKey: ${mapKey})`);
     
     cachedState.bots.forEach(botData => {
       const bot = new Bot();
@@ -941,7 +1109,11 @@ export class DungeonRoom extends Room<DungeonState> {
       bot.targetX = botData.targetX;
       bot.targetY = botData.targetY;
       bot.moveStartTime = Date.now();
+      bot.mapKey = mapKey; // Set the mapKey so bots are filtered correctly
+      
+      // Add to both the per-map storage and the global synchronized state
       activeMap.bots.set(bot.id, bot);
+      this.state.bots.set(bot.id, bot);
     });
   }
 
@@ -951,6 +1123,8 @@ export class DungeonRoom extends Room<DungeonState> {
   private cacheMapStateForPlayer(sessionId: string, activeMap: ActiveMap, playerX: number, playerY: number): void {
     const playerState = this.playerMapStates.get(sessionId);
     if (!playerState) return;
+
+    const mapKey = this.getMapKey(activeMap.depth, activeMap.seed);
 
     // Create cached state
     const cachedState: CachedMapState = {
@@ -963,17 +1137,19 @@ export class DungeonRoom extends Room<DungeonState> {
       entryPortalPoint: activeMap.dungeonData.entryPortalPoint
     };
 
-    // Cache bot states
-    activeMap.bots.forEach((bot, botId) => {
-      cachedState.bots.push({
-        id: botId,
-        x: bot.x,
-        y: bot.y,
-        health: bot.health,
-        maxHealth: bot.maxHealth,
-        targetX: bot.targetX,
-        targetY: bot.targetY
-      });
+    // Cache bot states from the global state (filtered by mapKey)
+    this.state.bots.forEach((bot, botId) => {
+      if (bot.mapKey === mapKey) {
+        cachedState.bots.push({
+          id: botId,
+          x: bot.x,
+          y: bot.y,
+          health: bot.health,
+          maxHealth: bot.maxHealth,
+          targetX: bot.targetX,
+          targetY: bot.targetY
+        });
+      }
     });
 
     // Store in player's cache (with limit)
@@ -1079,9 +1255,10 @@ export class DungeonRoom extends Room<DungeonState> {
     console.log(`🟢 Player ${sessionId} used EXIT portal: depth ${currentDepth} → ${nextDepth}`);
 
     // Spawn bots for new map if needed and game is running
+    const nextMapKey = this.getMapKey(nextDepth, nextSeed);
     if (this.state.gameStarted && nextMap.bots.size === 0) {
       const difficulty = getDifficultyForDepth(nextDepth);
-      nextMap.botManager.spawnBots(difficulty.botCount, this.state.players);
+      nextMap.botManager.spawnBots(difficulty.botCount, this.state.players, nextMapKey);
       console.log(`🤖 Spawned ${difficulty.botCount} bots for depth ${nextDepth}`);
     }
 
@@ -1176,9 +1353,10 @@ export class DungeonRoom extends Room<DungeonState> {
     console.log(`🟣 Player ${sessionId} used ENTRY portal: depth ${currentDepth} → ${previousDepth}`);
 
     // Spawn bots for previous map if needed and game is running
+    const previousMapKey = this.getMapKey(previousDepth, previousSeed);
     if (this.state.gameStarted && previousMap.bots.size === 0) {
       const difficulty = getDifficultyForDepth(previousDepth);
-      previousMap.botManager.spawnBots(difficulty.botCount, this.state.players);
+      previousMap.botManager.spawnBots(difficulty.botCount, this.state.players, previousMapKey);
       console.log(`🤖 Spawned ${difficulty.botCount} bots for depth ${previousDepth}`);
     }
 
@@ -1190,6 +1368,36 @@ export class DungeonRoom extends Room<DungeonState> {
 
     // Cleanup empty maps
     this.cleanupEmptyMaps();
+  }
+
+  /**
+   * Respawn a player at the entry point of their current map
+   * Called when player loses a life but still has lives remaining
+   */
+  private respawnPlayerAtMapEntry(sessionId: string, activeMap: ActiveMap): void {
+    const player = this.state.players.get(sessionId);
+    if (!player) return;
+
+    // Determine respawn location:
+    // 1. Entry portal point (if exists - maps deeper than depth 0)
+    // 2. Spawn point (for depth 0 or fallback)
+    let respawnX: number;
+    let respawnY: number;
+
+    if (activeMap.dungeonData.entryPortalPoint) {
+      // Respawn at entry portal (where player entered this map from)
+      respawnX = activeMap.dungeonData.entryPortalPoint.x;
+      respawnY = activeMap.dungeonData.entryPortalPoint.y;
+      console.log(`🔄 Player ${sessionId} respawning at entry portal (${respawnX}, ${respawnY}) on depth ${activeMap.depth}`);
+    } else {
+      // No entry portal (depth 0) - use spawn point
+      respawnX = activeMap.dungeonData.spawnPoint.x;
+      respawnY = activeMap.dungeonData.spawnPoint.y;
+      console.log(`🔄 Player ${sessionId} respawning at spawn point (${respawnX}, ${respawnY}) on depth ${activeMap.depth}`);
+    }
+
+    player.x = respawnX;
+    player.y = respawnY;
   }
 
   /**
@@ -1238,7 +1446,8 @@ export class DungeonRoom extends Room<DungeonState> {
       const map = this.activeMaps.get(key);
       if (map) {
         map.bots.clear();
-        map.botManager.clearAllBots();
+        // Use clearBotsForMap to only clear bots belonging to this specific map
+        map.botManager.clearBotsForMap(key);
         console.log(`🧹 Cleaned up empty map: ${key}`);
       }
       this.activeMaps.delete(key);

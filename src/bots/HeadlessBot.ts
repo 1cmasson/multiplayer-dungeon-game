@@ -102,9 +102,9 @@ export class HeadlessBot {
         console.log(`[${this.config.name}] Received initial state`);
       }
 
-      // Generate dungeon from seed
+      // Generate dungeon from seed (use depth 0 for base generation)
       const generator = new DungeonGenerator(state.width, state.height, state.seed);
-      const dungeonData = generator.generate(state.currentLevel);
+      const dungeonData = generator.generate(state.currentMapDepth);
       this.dungeonGrid = dungeonData.grid;
 
       if (this.config.verbose) {
@@ -124,17 +124,17 @@ export class HeadlessBot {
       });
     });
 
-    // Listen for level changes
-    this.room.onMessage("levelAdvanced", (message: any) => {
+    // Listen for map changes (instead of level changes)
+    this.room.onMessage("mapChanged", (message: any) => {
       if (this.config.verbose) {
-        console.log(`[${this.config.name}] Level advanced! New level: ${message.level}`);
+        console.log(`[${this.config.name}] Map changed! New depth: ${message.depth}`);
       }
 
       // Regenerate dungeon with new seed
       if (this.room && this.room.state) {
         const state = this.room.state;
         const generator = new DungeonGenerator(state.width, state.height, state.seed);
-        const dungeonData = generator.generate(state.currentLevel);
+        const dungeonData = generator.generate(state.currentMapDepth);
         this.dungeonGrid = dungeonData.grid;
         this.strategy.reset();
       }

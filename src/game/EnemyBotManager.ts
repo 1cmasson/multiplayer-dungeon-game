@@ -1,6 +1,6 @@
 import { MapSchema } from '@colyseus/schema';
 import { DungeonState, Player, Bot } from '../rooms/schema/DungeonState';
-import { TileType } from '../utils/dungeonGenerator';
+import { TileType, getDifficultyForDepth } from '../utils/dungeonGenerator';
 import { Pathfinding, Point } from '../bots/ai/Pathfinding';
 
 /**
@@ -36,14 +36,17 @@ export class EnemyBotManager {
 
   /**
    * Spawn bots using spawn zones with rotation
+   * @param count Number of bots to spawn
+   * @param players Current players (to avoid spawning too close)
+   * @param mapKey The map key this bot belongs to (e.g., "0_12345" for depth_seed)
    */
-  spawnBots(count: number, players: MapSchema<Player>): void {
+  spawnBots(count: number, players: MapSchema<Player>, mapKey: string = ""): void {
     const MIN_SPAWN_DISTANCE = 8; // Reduced from 10 to 8 - bots spawn closer
     const spawnZones = this.dungeonData.spawnZones || [];
 
     // If no spawn zones available, fall back to random spawning
     if (spawnZones.length === 0) {
-      this.spawnBotsRandomly(count, players);
+      this.spawnBotsRandomly(count, players, mapKey);
       return;
     }
 
@@ -112,13 +115,17 @@ export class EnemyBotManager {
         bot.targetY = location.y;
         bot.moveStartTime = Date.now();
 
-        // Calculate bot health based on current level
-        bot.maxHealth = this.getBotHealthForLevel(this.state.currentLevel);
+        // Calculate bot health based on current map depth
+        const difficulty = getDifficultyForDepth(this.state.currentMapDepth);
+        bot.maxHealth = difficulty.botHealth;
         bot.health = bot.maxHealth;
+        
+        // Set the map key for multi-map filtering
+        bot.mapKey = mapKey;
 
         this.state.bots.set(bot.id, bot);
         
-        console.log(`🤖 Spawned ${role} bot ${bot.id} in ${selectedZone.direction} zone at (${bot.x}, ${bot.y})`);
+        console.log(`🤖 Spawned ${role} bot ${bot.id} in ${selectedZone.direction} zone at (${bot.x}, ${bot.y}) [map: ${mapKey}]`);
       }
     }
   }
@@ -172,7 +179,7 @@ export class EnemyBotManager {
   /**
    * Fallback: spawn bots randomly (old behavior)
    */
-  private spawnBotsRandomly(count: number, players: MapSchema<Player>): void {
+  private spawnBotsRandomly(count: number, players: MapSchema<Player>, mapKey: string = ""): void {
     const MIN_SPAWN_DISTANCE = 10;
 
     for (let i = 0; i < count; i++) {
@@ -229,8 +236,12 @@ export class EnemyBotManager {
         bot.targetY = tileY;
         bot.moveStartTime = Date.now();
 
-        bot.maxHealth = this.getBotHealthForLevel(this.state.currentLevel);
+        const difficulty = getDifficultyForDepth(this.state.currentMapDepth);
+        bot.maxHealth = difficulty.botHealth;
         bot.health = bot.maxHealth;
+        
+        // Set the map key for multi-map filtering
+        bot.mapKey = mapKey;
 
         this.state.bots.set(bot.id, bot);
       }
@@ -239,15 +250,24 @@ export class EnemyBotManager {
 
   /**
    * Update bot AI (tile-based movement with A* pathfinding)
+   * @param deltaTime Time since last update in seconds
+   * @param players All players (will be filtered to those on the same map)
+   * @param mapKey Optional map key to filter bots - only bots with this mapKey will be updated
    */
-  updateBots(deltaTime: number, players: MapSchema<Player>): void {
+  updateBots(deltaTime: number, players: MapSchema<Player>, mapKey?: string): void {
     const currentTime = Date.now();
-    const moveInterval = this.getMoveInterval(this.state.currentLevel);
+    const difficulty = getDifficultyForDepth(this.state.currentMapDepth);
+    const moveInterval = this.getMoveIntervalFromSpeed(difficulty.botSpeed);
 
     // Process pathfinding queue (limit concurrent calculations)
-    this.processPathfindingQueue(players);
+    this.processPathfindingQueue(players, mapKey);
 
     this.state.bots.forEach((bot) => {
+      // Skip bots not on this map (if mapKey filter is provided)
+      if (mapKey && bot.mapKey !== mapKey) {
+        return;
+      }
+      
       // Check if bot is on cooldown
       const lastMove = this.botMoveCooldowns.get(bot.id) || 0;
       const timeSinceLastMove = currentTime - lastMove;
@@ -256,8 +276,8 @@ export class EnemyBotManager {
         return; // Still on cooldown, skip this bot
       }
 
-      // Find nearest living player
-      const nearestPlayer = this.findNearestPlayer(bot, players);
+      // Find nearest living player ON THE SAME MAP
+      const nearestPlayer = this.findNearestPlayerOnMap(bot, players, mapKey);
       if (!nearestPlayer) return;
 
       // Determine target based on bot role
@@ -271,7 +291,7 @@ export class EnemyBotManager {
       // Get next tile from path or fallback to direct movement
       const nextTile = this.getNextTileFromPath(bot, targetPosition);
       
-      if (nextTile && this.isValidMove(nextTile.x, nextTile.y) && !this.isTileOccupied(nextTile.x, nextTile.y, bot.id)) {
+      if (nextTile && this.isValidMove(nextTile.x, nextTile.y) && !this.isTileOccupied(nextTile.x, nextTile.y, bot.id, mapKey)) {
         // Successfully moving - reset stuck counter
         this.botStuckCounters.set(bot.id, 0);
         
@@ -319,6 +339,43 @@ export class EnemyBotManager {
           nearestDistance = dist;
           nearestPlayer = player;
         }
+      }
+    });
+
+    return nearestPlayer;
+  }
+
+  /**
+   * Find nearest living player on the same map as the bot
+   * @param bot The bot looking for a target
+   * @param players All players
+   * @param mapKey Optional map key - if provided, only consider players on this map
+   */
+  private findNearestPlayerOnMap(bot: Bot, players: MapSchema<Player>, mapKey?: string): Player | undefined {
+    let nearestPlayer: Player | undefined = undefined;
+    let nearestDistance = Infinity;
+
+    players.forEach((player) => {
+      if (player.lives <= 0) return;
+      
+      // If mapKey is provided, check if player is on the same map
+      // We need to check player's currentMapDepth and currentMapSeed
+      if (mapKey) {
+        // Parse mapKey format: "depth_seed" e.g., "0_12345"
+        const [depthStr, seedStr] = mapKey.split('_');
+        const mapDepth = parseInt(depthStr, 10);
+        const mapSeed = parseInt(seedStr, 10);
+        
+        // Only consider players on the same map
+        if (player.currentMapDepth !== mapDepth || player.currentMapSeed !== mapSeed) {
+          return;
+        }
+      }
+      
+      const dist = Math.sqrt((player.x - bot.x) ** 2 + (player.y - bot.y) ** 2);
+      if (dist < nearestDistance) {
+        nearestDistance = dist;
+        nearestPlayer = player;
       }
     });
 
@@ -563,7 +620,7 @@ export class EnemyBotManager {
   /**
    * Process pathfinding queue (limit concurrent calculations)
    */
-  private processPathfindingQueue(players: MapSchema<Player>): void {
+  private processPathfindingQueue(players: MapSchema<Player>, mapKey?: string): void {
     const botsToProcess = Math.min(this.pathfindingQueue.length, this.MAX_CONCURRENT_PATHFINDING);
     
     for (let i = 0; i < botsToProcess; i++) {
@@ -573,7 +630,10 @@ export class EnemyBotManager {
       const bot = this.state.bots.get(botId);
       if (!bot) continue;
       
-      const target = this.findNearestPlayer(bot, players);
+      // Skip if bot is not on the current map being processed
+      if (mapKey && bot.mapKey !== mapKey) continue;
+      
+      const target = this.findNearestPlayerOnMap(bot, players, mapKey);
       if (!target) continue;
       
       this.calculatePath(bot, target);
@@ -639,11 +699,20 @@ export class EnemyBotManager {
   }
 
   /**
-   * Check if tile is occupied by another bot
+   * Check if tile is occupied by another bot (on the same map)
+   * @param x Tile X coordinate
+   * @param y Tile Y coordinate  
+   * @param excludeBotId Bot ID to exclude from check
+   * @param mapKey Optional map key - if provided, only check bots on this map
    */
-  private isTileOccupied(x: number, y: number, excludeBotId: string): boolean {
+  private isTileOccupied(x: number, y: number, excludeBotId: string, mapKey?: string): boolean {
     for (const [botId, bot] of this.state.bots) {
-      if (botId !== excludeBotId && bot.x === x && bot.y === y) {
+      if (botId === excludeBotId) continue;
+      
+      // Skip bots on different maps
+      if (mapKey && bot.mapKey !== mapKey) continue;
+      
+      if (bot.x === x && bot.y === y) {
         return true; // Tile occupied
       }
     }
@@ -651,15 +720,58 @@ export class EnemyBotManager {
   }
 
   /**
-   * Get move interval based on level (faster at higher levels)
+   * Get move interval from bot speed value (from difficulty config)
+   * The botSpeed is already in ms - lower values = faster movement
    */
-  getMoveInterval(level: number): number {
-    const speedMultiplier = 1 - (level - 1) * 0.1; // -10% per level
-    return Math.max(100, this.BASE_MOVE_INTERVAL * speedMultiplier);
+  getMoveIntervalFromSpeed(botSpeed: number): number {
+    return Math.max(100, botSpeed); // Minimum 100ms between moves
   }
 
   /**
-   * Clear all bots and their cooldowns
+   * Get move interval based on map depth
+   * @deprecated Use getMoveIntervalFromSpeed with difficulty.botSpeed instead
+   */
+  getMoveInterval(depth: number): number {
+    const difficulty = getDifficultyForDepth(depth);
+    return this.getMoveIntervalFromSpeed(difficulty.botSpeed);
+  }
+
+  /**
+   * Clear bots belonging to a specific map and their associated state
+   * @param mapKey The map key to clear bots for (e.g., "2_12345" for depth_seed)
+   */
+  clearBotsForMap(mapKey: string): void {
+    // Only clear bots belonging to this specific map
+    const botsToRemove: string[] = [];
+    this.state.bots.forEach((bot, id) => {
+      if (bot.mapKey === mapKey) {
+        botsToRemove.push(id);
+      }
+    });
+    
+    botsToRemove.forEach(id => {
+      this.state.bots.delete(id);
+      // Clean up associated state for this bot
+      this.botMoveCooldowns.delete(id);
+      this.botPaths.delete(id);
+      this.botPathTargets.delete(id);
+      this.botStuckCounters.delete(id);
+      this.botLastPathUpdate.delete(id);
+      this.botRoles.delete(id);
+      
+      // Remove from pathfinding queue if present
+      const queueIndex = this.pathfindingQueue.indexOf(id);
+      if (queueIndex !== -1) {
+        this.pathfindingQueue.splice(queueIndex, 1);
+      }
+    });
+    
+    console.log(`🧹 Cleared ${botsToRemove.length} bots for map ${mapKey}`);
+  }
+  
+  /**
+   * Clear all bots and their cooldowns (use with caution - clears ALL maps)
+   * @deprecated Use clearBotsForMap(mapKey) instead to avoid clearing bots from other maps
    */
   clearAllBots(): void {
     this.state.bots.clear();

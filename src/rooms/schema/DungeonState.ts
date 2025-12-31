@@ -26,6 +26,9 @@ export class Bot extends Schema {
   @type("number") targetX: number = 0;  // Target tile bot is moving to
   @type("number") targetY: number = 0;  // Target tile bot is moving to
   @type("number") moveStartTime: number = 0;  // When movement began (for interpolation)
+  
+  // Multi-map tracking: which map this bot belongs to (e.g., "0_12345" for depth_seed)
+  @type("string") mapKey: string = "";
 }
 
 export class Bullet extends Schema {
@@ -35,6 +38,9 @@ export class Bullet extends Schema {
   @type("number") y: number = 0;
   @type("number") velocityX: number = 0;
   @type("number") velocityY: number = 0;
+  
+  // Multi-map tracking: which map this bullet belongs to (e.g., "0_12345" for depth_seed)
+  @type("string") mapKey: string = "";
 }
 
 export class Transport extends Schema {
@@ -53,11 +59,7 @@ export class DungeonState extends Schema {
   @type("number") height: number = 120;
   @type("number") exitX: number = 0;
   @type("number") exitY: number = 0;
-  @type("number") currentLevel: number = 1; // Current level (1-5)
-  @type("number") totalLevels: number = 5; // Total number of levels
-  @type("number") totalKills: number = 0; // Total bots killed across all levels
-  @type("number") currentLevelKills: number = 0; // Kills in current level
-  @type("number") killsNeededForNextLevel: number = 10; // Dynamic target per level
+  @type("number") totalKills: number = 0; // Total bots killed across all maps
   @type("boolean") gameStarted: boolean = false; // Whether the game has started (bots spawn)
   @type("string") hostSessionId: string = ""; // Session ID of the room host (can start game)
   
